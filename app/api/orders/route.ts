@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { createOrder, getMenuItem, getOrders, type OrderLine, type PaymentMethod } from "@/lib/store";
+import { checkStock, createOrder, decrementStock, getMenuItem, getOrders, learnFromOrder, type OrderLine, type PaymentMethod } from "@/lib/store";
 import { isOwnerRequest, resolveUser } from "@/lib/telegram-auth";
 import { notifyOwnerNewOrder } from "@/bot/bot";
+import { sendOrderTrackerWidget } from "@/lib/widget";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -20,6 +21,13 @@ export async function POST(req: Request) {
   if (rawItems.length === 0) {
     return NextResponse.json({ ok: false, error: "Cart is empty" }, { status: 400 });
   }
+  // Stock check on the RAW requested quantities first — before the per-line
+  // qty clamp below — so an over-order (e.g. 99 croissants when 25 are left)
+  // is rejected with the amount left instead of silently shrinking.
+  const rawStockError = checkStock(
+    rawItems.map((r: { id: string; qty: number }) => ({ id: String(r.id), qty: Number(r.qty) || 1 })),
+  );
+  if (rawStockError) return NextResponse.json({ ok: false, error: rawStockError }, { status: 400 });
   const lines: OrderLine[] = [];
   for (const raw of rawItems as { id: string; qty: number; options?: Record<string, string> }[]) {
     const menuItem = getMenuItem(raw.id);
@@ -39,6 +47,9 @@ export async function POST(req: Request) {
     // Address is optional in demo (location share may come later) — do not block.
   }
   const paymentMethod = (["telebirr", "chapa", "stars"].includes(String(body.paymentMethod)) ? body.paymentMethod : "telebirr") as PaymentMethod;
+  // Stock check first — reject the whole order if any line exceeds what's left.
+  const stockError = checkStock(lines.map((l) => ({ id: l.id, qty: l.qty })));
+  if (stockError) return NextResponse.json({ ok: false, error: stockError }, { status: 400 });
   const order = createOrder({
     user,
     lines,
@@ -49,8 +60,15 @@ export async function POST(req: Request) {
     paymentMethod,
     referralCode: typeof body.referralCode === "string" ? body.referralCode : undefined,
   });
+  // Sale decrements stock (soldOut flips at 0) and teaches the AI barista
+  // the customer's favourites. Neither may fail the order.
+  try { decrementStock(lines.map((l) => ({ id: l.id, qty: l.qty }))); } catch { /* ignore */ }
+  learnFromOrder(order);
   // Fire-and-forget owner notification — never fail the order on notify error.
   notifyOwnerNewOrder(order.id).catch(() => undefined);
+  // Send the interactive order-tracker widget (Bot API 10.4) to the customer
+  // in the bot chat — no-op without BOT_TOKEN or if they never started the bot.
+  sendOrderTrackerWidget(order.id).catch(() => undefined);
   const mockPayCode = paymentMethod === "stars" ? undefined : `BC-${order.id.slice(3)}-${Math.floor(1000 + Math.random() * 9000)}`;
   return NextResponse.json({ ok: true, order, mockPayCode, stampsEarned: order.stampsEarned }, { status: 201 });
 }

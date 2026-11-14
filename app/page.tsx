@@ -3,9 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { TelegramProvider, useTelegram } from "@/components/TelegramProvider";
+import BunaAIChat from "@/components/BunaAIChat";
 import { CATEGORIES, SUBSCRIPTION_PLAN, type MenuItem } from "@/lib/data";
 import { formatETB } from "@/lib/format";
 import type { Order, OrderStatus } from "@/lib/store";
+
+type ShopItem = MenuItem & { stockLeft?: number; unit?: string; lowAt?: number };
+interface InventoryRow { id: string; name: string; qty: number; unit: string; lowAt: number; low: boolean; soldOut?: boolean; }
 
 type View = "home" | "item" | "cart" | "checkout" | "tracking" | "loyalty" | "admin" | "subscribe";
 interface CartLine { id: string; qty: number; options: Record<string, string>; }
@@ -18,7 +22,7 @@ function Skeleton({ className = "" }: { className?: string }) {
   return <div className={`animate-pulse rounded-3xl bg-coffee-100 ${className}`} />;
 }
 
-function ItemCard({ item, onOpen }: { item: MenuItem; onOpen: () => void }) {
+function ItemCard({ item, onOpen }: { item: ShopItem; onOpen: () => void }) {
   return (
     <button onClick={onOpen} className="animate-fade-up overflow-hidden rounded-3xl bg-white text-left shadow-card transition-transform duration-150 active:scale-[0.98]">
       <div className="relative h-36 w-full">
@@ -37,7 +41,7 @@ function ItemCard({ item, onOpen }: { item: MenuItem; onOpen: () => void }) {
 
 function StoreApp() {
   const { user, initData, isTelegram, startParam, haptic, setMainButton, setBackButton } = useTelegram();
-  const [menu, setMenu] = useState<MenuItem[]>([]);
+  const [menu, setMenu] = useState<ShopItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [category, setCategory] = useState<string>("All");
   const [view, setView] = useState<View>("home");
@@ -57,12 +61,19 @@ function StoreApp() {
   const [loyalty, setLoyalty] = useState<LoyaltyData | null>(null);
   const [sub, setSub] = useState<{ active: boolean; nextBillingAt?: string } | null>(null);
   const [adminOrders, setAdminOrders] = useState<Order[]>([]);
-  const [sales, setSales] = useState<{ count: number; revenue: number; byStatus: Record<string, number> } | null>(null);
+  const [sales, setSales] = useState<{ count: number; revenue: number; byStatus: Record<string, number>; lowStock?: { id: string; name: string; qty: number; unit: string; lowAt: number }[] } | null>(null);
   const [isOwner, setIsOwner] = useState(false);
   const [placing, setPlacing] = useState(false);
   const [toast, setToast] = useState("");
   const [qty, setQty] = useState(1);
   const [selOptions, setSelOptions] = useState<Record<string, string>>({});
+  const [aiOpen, setAiOpen] = useState(false);
+  const [describeText, setDescribeText] = useState("");
+  const [describing, setDescribing] = useState(false);
+  const [inventory, setInventory] = useState<InventoryRow[]>([]);
+  const [adminTab, setAdminTab] = useState<"orders" | "inventory">("orders");
+  const [invQty, setInvQty] = useState<Record<string, string>>({});
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const initDataRef = useRef(initData);
   initDataRef.current = initData;
 
@@ -77,16 +88,32 @@ function StoreApp() {
     return res.json() as Promise<Record<string, unknown>>;
   }, [demoOwner]);
 
-  // Load menu + deep link (startapp) + owner probe
+  // Load menu + deep link (startapp) + owner probe + bot-checkout draft
   useEffect(() => {
-    fetch("/api/menu").then((r) => r.json()).then((d) => { setMenu((d.items ?? []) as MenuItem[]); setLoading(false); }).catch(() => setLoading(false));
+    fetch("/api/menu").then((r) => r.json()).then((d) => { setMenu((d.items ?? []) as ShopItem[]); setLoading(false); }).catch(() => setLoading(false));
     try {
       const saved = localStorage.getItem("buna-cart");
       if (saved) setCart(JSON.parse(saved) as CartLine[]);
       const savedRef = localStorage.getItem("buna-referral");
       if (savedRef) setReferral(savedRef);
     } catch { /* ignore */ }
-    api("/api/admin/sales").then((d) => { if (d.ok) { setIsOwner(true); setSales(d as unknown as { count: number; revenue: number; byStatus: Record<string, number> }); } }).catch(() => undefined);
+    // Bot checkout draft: ?view=checkout&draft=<id> prefills the cart.
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("view") === "checkout" && params.get("draft")) {
+        const draftId = params.get("draft") as string;
+        fetch(`/api/drafts/${encodeURIComponent(draftId)}`).then((r) => r.json()).then((d) => {
+          const draft = (d as { draft?: { lines: { id: string; qty: number; options?: Record<string, string> }[] } }).draft;
+          if (draft) {
+            setCart(draft.lines.map((l) => ({ id: l.id, qty: l.qty, options: l.options ?? {} })));
+            setView("checkout");
+            setToast("🧾 Your bot order is ready to check out");
+            setTimeout(() => setToast(""), 2500);
+          }
+        }).catch(() => undefined);
+      }
+    } catch { /* ignore */ }
+    api("/api/admin/sales").then((d) => { if (d.ok) { setIsOwner(true); setSales(d as unknown as { count: number; revenue: number; byStatus: Record<string, number>; lowStock?: { id: string; name: string; qty: number; unit: string; lowAt: number }[] }); } }).catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -99,6 +126,17 @@ function StoreApp() {
     } else if (startParam.startsWith("item_")) {
       setItemId(startParam.replace("item_", ""));
       setView("item");
+    } else if (startParam.startsWith("checkout_")) {
+      const draftId = startParam.replace("checkout_", "");
+      fetch(`/api/drafts/${encodeURIComponent(draftId)}`).then((r) => r.json()).then((d) => {
+        const draft = (d as { draft?: { lines: { id: string; qty: number; options?: Record<string, string> }[] } }).draft;
+        if (draft) {
+          setCart(draft.lines.map((l) => ({ id: l.id, qty: l.qty, options: l.options ?? {} })));
+          setView("checkout");
+        }
+      }).catch(() => undefined);
+    } else if (startParam === "ai") {
+      setAiOpen(true);
     }
   }, [startParam]);
 
@@ -141,6 +179,16 @@ function StoreApp() {
   const cartCount = useMemo(() => cart.reduce((n, l) => n + l.qty, 0), [cart]);
 
   const addToCart = useCallback((id: string, options: Record<string, string>, q: number) => {
+    const item = menu.find((m) => m.id === id);
+    const left = item?.stockLeft;
+    if (typeof left === "number") {
+      const inCart = cart.reduce((n, l) => n + (l.id === id ? l.qty : 0), 0);
+      if (inCart + q > left) {
+        setToast(left <= 0 ? `${item?.name ?? "This item"} is sold out` : `Only ${left} left — ${inCart} already in your cart`);
+        setTimeout(() => setToast(""), 2200);
+        return;
+      }
+    }
     setCart((prev) => {
       const key = JSON.stringify(options);
       const idx = prev.findIndex((l) => l.id === id && JSON.stringify(l.options) === key);
@@ -150,13 +198,48 @@ function StoreApp() {
     haptic("medium");
     setToast("Added to cart ☕");
     setTimeout(() => setToast(""), 1800);
-  }, [haptic]);
+  }, [haptic, menu, cart]);
+
+  const listenToDescription = useCallback(async (item: ShopItem) => {
+    if (describing) return;
+    setDescribing(true);
+    setDescribeText("");
+    try {
+      const d = await api("/api/ai/describe", { method: "POST", body: JSON.stringify({ itemId: item.id }) });
+      if (d.ok && typeof d.text === "string") {
+        setDescribeText(d.text);
+        if (typeof d.audioBase64 === "string" && d.audioBase64) {
+          try {
+            audioRef.current?.pause();
+            const a = new Audio(`data:${(d.audioMime as string) || "audio/wav"};base64,${d.audioBase64}`);
+            audioRef.current = a;
+            await a.play().catch(() => undefined);
+          } catch { /* audio is best-effort */ }
+        } else if ((d as { mock?: boolean }).mock) {
+          setDescribeText(`${d.text as string}\n(🔇 Voice needs a Gemini key — text description above.)`);
+        }
+      }
+    } catch { setDescribeText("Couldn't load the description right now."); }
+    setDescribing(false);
+  }, [api, describing]);
+
+  const loadInventory = useCallback(() => {
+    api("/api/inventory").then((d) => { if (d.ok) setInventory((d.inventory ?? []) as InventoryRow[]); }).catch(() => undefined);
+  }, [api]);
+
+  useEffect(() => { if (view === "admin" && adminTab === "inventory") loadInventory(); }, [view, adminTab, loadInventory]);
+
+  const restockItem = async (item: InventoryRow, qty: number) => {
+    const d = await api("/api/admin/inventory", { method: "PATCH", body: JSON.stringify({ itemId: item.id, qty }) });
+    if (d.ok) { loadInventory(); setToast(`${item.name} → ${qty} left`); setTimeout(() => setToast(""), 1800); }
+    else setToast(String(d.error ?? "Restock failed"));
+  };
 
   const go = useCallback((v: View) => { setView(v); window.scrollTo({ top: 0 }); }, []);
 
   const openItem = useCallback((id: string) => {
     const item = menu.find((m) => m.id === id);
-    setItemId(id); setQty(1);
+    setItemId(id); setQty(1); setDescribeText("");
     const defaults: Record<string, string> = {};
     for (const g of item?.options ?? []) defaults[g.name] = g.choices[0].label;
     setSelOptions(defaults);
@@ -333,7 +416,17 @@ function StoreApp() {
           <div className="relative h-64 overflow-hidden rounded-3xl"><Image src={selected.image} alt={selected.name} fill className="object-cover" sizes="(max-width: 768px) 100vw, 400px" /></div>
           <h1 className="mt-4 text-2xl font-black leading-tight">{selected.name}</h1>
           <p className="text-sm font-semibold text-coffee-400">{selected.amharicName} • {selected.category}</p>
+          {typeof selected.stockLeft === "number" && selected.stockLeft > 0 && selected.stockLeft <= (selected.lowAt ?? 5) && (
+            <p className="mt-2 w-fit rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800">⚠️ Only {selected.stockLeft} left today</p>
+          )}
+          {typeof selected.stockLeft === "number" && selected.stockLeft === 0 && (
+            <p className="mt-2 w-fit rounded-full bg-red-100 px-3 py-1 text-xs font-black text-red-800">Sold out today</p>
+          )}
           <p className="mt-2 text-sm leading-relaxed text-coffee-700">{selected.description}</p>
+          <button onClick={() => void listenToDescription(selected)} disabled={describing} className="mt-3 flex items-center gap-2 rounded-full bg-coffee-100 px-4 py-2 text-sm font-bold text-coffee-700 disabled:opacity-50 active:scale-95">
+            🔊 {describing ? "Listening…" : "Listen to description"}
+          </button>
+          {describeText && <p className="mt-3 whitespace-pre-line rounded-2xl bg-coffee-100 p-3 text-sm leading-relaxed text-coffee-700">🤖 {describeText}</p>}
           {selected.options?.map((group) => (
             <div key={group.name} className="mt-4">
               <p className="text-xs font-black uppercase tracking-wide text-coffee-500">{group.name}</p>
@@ -553,6 +646,13 @@ function StoreApp() {
       {view === "admin" && (
         <main className="animate-fade-up px-4 pt-4">
           <h1 className="text-2xl font-black">Owner dashboard</h1>
+          <div className="mt-3 flex gap-2">
+            {(["orders", "inventory"] as const).map((t) => (
+              <button key={t} onClick={() => setAdminTab(t)} className={`rounded-full px-4 py-2 text-sm font-bold capitalize ${adminTab === t ? "bg-coffee-900 text-white" : "bg-white shadow-card"}`}>
+                {t === "orders" ? "🧾 Orders" : "📦 Inventory"}
+              </button>
+            ))}
+          </div>
           {sales && (
             <div className="mt-4 grid grid-cols-3 gap-2">
               <div className="rounded-3xl bg-white p-3 text-center shadow-card"><p className="text-lg font-black">{sales.count}</p><p className="text-[11px] text-coffee-500">Orders today</p></div>
@@ -560,6 +660,12 @@ function StoreApp() {
               <div className="rounded-3xl bg-white p-3 text-center shadow-card"><p className="text-lg font-black">{sales.byStatus["Ready"] ?? 0}</p><p className="text-[11px] text-coffee-500">Ready</p></div>
             </div>
           )}
+          {sales?.lowStock && sales.lowStock.length > 0 && (
+            <p className="mt-3 rounded-2xl bg-amber-50 p-3 text-xs font-bold text-amber-800">
+              ⚠️ Low stock: {sales.lowStock.map((i) => `${i.name} (${i.qty} left)`).join(", ")}
+            </p>
+          )}
+          {adminTab === "orders" && (<>
           <h2 className="mt-6 text-base font-black">Incoming orders</h2>
           <div className="mt-3 space-y-3">
             {adminOrders.length === 0 && <p className="rounded-3xl bg-white p-4 text-sm text-coffee-500 shadow-card">No orders yet today.</p>}
@@ -585,9 +691,41 @@ function StoreApp() {
               </div>
             ))}
           </div>
+          </>)}
+          {adminTab === "inventory" && (
+            <>
+              <h2 className="mt-6 text-base font-black">Inventory</h2>
+              <p className="mt-1 text-xs text-coffee-500">Stock resets on redeploy (demo). Low = at or below the alert level.</p>
+              <div className="mt-3 space-y-2">
+                {inventory.length === 0 && <p className="rounded-3xl bg-white p-4 text-sm text-coffee-500 shadow-card">Loading inventory…</p>}
+                {inventory.map((row) => (
+                  <div key={row.id} className={`rounded-3xl p-3 shadow-card ${row.qty <= 0 ? "bg-red-50" : row.low ? "bg-amber-50" : "bg-white"}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-bold">{row.qty <= 0 ? "🔴 " : row.low ? "🟠 " : "🟢 "}{row.name}</p>
+                      <p className="text-sm font-black">{row.qty} {row.unit}{row.low && row.qty > 0 ? ` • low (≤${row.lowAt})` : ""}{row.qty <= 0 ? " • SOLD OUT" : ""}</p>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button onClick={() => void restockItem(row, row.qty + 10)} className="rounded-full bg-coffee-900 px-3 py-1.5 text-[11px] font-bold text-white">+10 restock</button>
+                      <input
+                        value={invQty[row.id] ?? String(row.qty)}
+                        onChange={(e) => setInvQty((p) => ({ ...p, [row.id]: e.target.value }))}
+                        inputMode="numeric"
+                        className="w-16 rounded-full border border-coffee-100 bg-white px-2 py-1.5 text-center text-sm font-bold outline-none"
+                        aria-label={`Set stock for ${row.name}`}
+                      />
+                      <button onClick={() => void restockItem(row, Number(invQty[row.id] ?? row.qty) || 0)} className="rounded-full bg-coffee-100 px-3 py-1.5 text-[11px] font-bold">Set qty</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           <p className="mt-4 text-[11px] leading-relaxed text-coffee-400">Channel posting needs BOT_TOKEN + CHANNEL_ID (and the bot as channel admin). Without them the button returns a clear error instead of crashing.</p>
         </main>
       )}
+
+      {/* Buna AI — floating barista chat */}
+      <BunaAIChat open={aiOpen} onOpenChange={setAiOpen} userId={userId} userName={user?.first_name ?? "friend"} api={api} haptic={haptic} />
 
       {/* Bottom nav */}
       <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-md -translate-x-1/2 justify-around border-t border-coffee-100 bg-white/95 px-2 py-2 backdrop-blur" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getOrder, updateOrderStatus, type OrderStatus } from "@/lib/store";
 import { isOwnerRequest, resolveUser } from "@/lib/telegram-auth";
 import { notifyOrderStatus } from "@/bot/bot";
+import { updateOrderTrackerWidget } from "@/lib/widget";
 
 const STATUSES: OrderStatus[] = ["Received", "Brewing", "Ready", "Out for delivery", "Completed", "Cancelled"];
 
@@ -26,5 +27,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const order = updateOrderStatus(id, status as OrderStatus);
   if (!order) return NextResponse.json({ ok: false, error: "Order not found" }, { status: 404 });
   notifyOrderStatus(id).catch(() => undefined);
+  // Re-render the order-tracker widget in place (no-op when none was sent).
+  updateOrderTrackerWidget(id).catch(() => undefined);
   return NextResponse.json({ ok: true, order });
 }

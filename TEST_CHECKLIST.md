@@ -43,3 +43,36 @@ curl -X POST $APP_URL/api/orders -H 'Content-Type: application/json' \
 curl $APP_URL/api/orders/BC-1001
 npm run test:auth
 ```
+
+## Buna AI — phone tests (no Gemini key needed; mock mode)
+- [ ] Floating 💬 button (bottom-right) opens the chat panel; the AI greets you by name in Amharic.
+- [ ] Ask in Amharic (e.g. "ማኪያቶ አለ?") — reply is Amharic and names a real menu item + price.
+- [ ] Ask in English (e.g. "do you have croissant?") — reply switches to English.
+- [ ] Tap EN/አማ in the chat header — replies follow the toggle.
+- [ ] Tap 🔊 Listen on an AI reply — in mock mode nothing plays (no key); with a key it speaks.
+- [ ] Turn on "Voice replies" — with a key, replies auto-play; in mock mode they don't (expected).
+- [ ] Item page: "🔊 Listen to description" shows the spoken-style description text (audio only with a key).
+- [ ] Memory: tell the AI your favourite ("I love macchiato"), place an order, then ask "what do I usually order?" — it remembers your favourite / order count.
+- [ ] Bot: send `/start` — AI greeting mentions 2 popular items + buttons "☕ Order" and "💬 Ask Buna AI".
+- [ ] Bot: send any free text ("what beans do you have?") — AI replies in the bot (same memory as the Mini App).
+- [ ] Bot: send `/checkout` after chatting about a favourite — checkout card with "🧾 Checkout & Pay" opens the Mini App at checkout with the item prefilled.
+- [ ] API (no key): `GET /api/ai/health` → `aiConfigured: false, mock: true`; `POST /api/ai/chat` returns an Amharic mock reply; `POST /api/ai/describe` returns text with `audioBase64: null`.
+
+## Inventory — phone + API tests
+- [ ] Item page: an item at/below its low level shows "⚠️ Only X left today" (e.g. order croissants down or use the owner tab to set qty 3).
+- [ ] Item at 0 shows "Sold out today" and cannot be added to the cart.
+- [ ] Cart: adding more than the stock left shows "Only X left" and does not add.
+- [ ] Owner tab (🧑‍🍳) → 📦 Inventory: stock list with 🟢/🟠/🔴, "+10 restock" and "Set qty" work; low-stock items are highlighted.
+- [ ] Daily sales summary (owner) lists low-stock items.
+- [ ] API: order 2 macchiatos → `GET /api/menu` shows macchiato stock 40 → 38; order 99 croissants → 400 error "Only 25 Croissants left" (or however many are left).
+- [ ] AI stock question: ask "do you have croissant?" after selling them out — the AI says it's sold out and suggests an in-stock alternative.
+
+## HTML widgets (Bot API 10.4) — phone tests (needs BOT_TOKEN + webhook)
+- [ ] In the bot chat, send "tell me about macchiato" — AI text reply arrives AND the ☕ item card appears below it (name, 80 ETB, "40 left").
+- [ ] Tap size M on the card — the price updates to 110 ETB and M highlights.
+- [ ] Tap "➕ Add to cart" — the card updates to "✅ Added (1) — add another".
+- [ ] Tap it again — "✅ Added (2)".
+- [ ] Tap "🧾 Checkout" — the bot sends a checkout card; "🧾 Checkout & Pay" opens the Mini App at checkout with 2× Medium macchiato prefilled.
+- [ ] Place the order — a 🧾 tracker widget appears in the bot chat (Received → Brewing → Ready).
+- [ ] Owner marks the order Brewing — the tracker widget updates in place (no new message).
+- [ ] Offline check (no token, no network): `npm run test:widgets` — all checks pass, both widgets under 4,096 compressed bytes, no external URLs/images in the HTML.
