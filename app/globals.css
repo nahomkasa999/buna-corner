@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --tg-bg: #fff8f0;
+  --tg-text: #1a120b;
+  --tg-accent: #c08a3e;
+}
+
+html, body {
+  background: var(--tg-bg);
+  color: var(--tg-text);
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  padding-top: max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px));
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px));
+  overscroll-behavior: none;
+}
+
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { display: none; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up { animation: fadeUp 0.25s ease-out both; }
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}

@@ -1,0 +1,84 @@
+// Buna Corner — real-DB schema (SQLite by default; swap provider for Postgres).
+// NOTE: the demo runtime uses the in-memory store in lib/store.ts so the
+// Vercel build never depends on Prisma client generation. When you are ready
+// for real persistence, run `npx prisma generate && npx prisma db push`
+// and point the API routes at these models instead of lib/store.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model MenuItem {
+  id          String  @id
+  slug        String  @unique
+  name        String
+  amharicName String
+  description String
+  price       Int
+  category    String
+  image       String
+  popular     Boolean @default(false)
+  soldOut     Boolean @default(false)
+  hidden      Boolean @default(false)
+  options     String? // JSON: MenuOptionGroup[]
+  orders      OrderLine[]
+}
+
+model User {
+  id         Int      @id
+  firstName  String
+  username   String?
+  stamps     Int      @default(0)
+  freeDrinks Int      @default(0)
+  orders     Order[]
+  subscription Subscription?
+}
+
+model Order {
+  id            String   @id
+  userId        Int
+  user          User     @relation(fields: [userId], references: [id])
+  subtotal      Int
+  tip           Int      @default(0)
+  deliveryFee   Int      @default(0)
+  total         Int
+  fulfillment   String
+  address       String?
+  notes         String?
+  paymentMethod String
+  paymentStatus String
+  status        String   @default("Received")
+  referralCode  String?
+  stampsEarned  Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lines         OrderLine[]
+}
+
+model OrderLine {
+  id        Int      @id @default(autoincrement())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id])
+  itemId    String
+  item      MenuItem @relation(fields: [itemId], references: [id])
+  name      String
+  qty       Int
+  unitPrice Int
+  options   String? // JSON
+}
+
+model Subscription {
+  id             Int      @id @default(autoincrement())
+  userId         Int      @unique
+  user           User     @relation(fields: [userId], references: [id])
+  planId         String
+  active         Boolean  @default(true)
+  method         String
+  startedAt      DateTime @default(now())
+  nextBillingAt  DateTime
+}
