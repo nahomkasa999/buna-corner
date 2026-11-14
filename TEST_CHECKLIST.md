@@ -44,19 +44,24 @@ curl $APP_URL/api/orders/BC-1001
 npm run test:auth
 ```
 
-## Buna AI — phone tests (no Gemini key needed; mock mode)
-- [ ] Floating 💬 button (bottom-right) opens the chat panel; the AI greets you by name in Amharic.
-- [ ] Ask in Amharic (e.g. "ማኪያቶ አለ?") — reply is Amharic and names a real menu item + price.
-- [ ] Ask in English (e.g. "do you have croissant?") — reply switches to English.
-- [ ] Tap EN/አማ in the chat header — replies follow the toggle.
-- [ ] Tap 🔊 Listen on an AI reply — in mock mode nothing plays (no key); with a key it speaks.
-- [ ] Turn on "Voice replies" — with a key, replies auto-play; in mock mode they don't (expected).
-- [ ] Item page: "🔊 Listen to description" shows the spoken-style description text (audio only with a key).
-- [ ] Memory: tell the AI your favourite ("I love macchiato"), place an order, then ask "what do I usually order?" — it remembers your favourite / order count.
-- [ ] Bot: send `/start` — AI greeting mentions 2 popular items + buttons "☕ Order" and "💬 Ask Buna AI".
-- [ ] Bot: send any free text ("what beans do you have?") — AI replies in the bot (same memory as the Mini App).
-- [ ] Bot: send `/checkout` after chatting about a favourite — checkout card with "🧾 Checkout & Pay" opens the Mini App at checkout with the item prefilled.
-- [ ] API (no key): `GET /api/ai/health` → `aiConfigured: false, mock: true`; `POST /api/ai/chat` returns an Amharic mock reply; `POST /api/ai/describe` returns text with `audioBase64: null`.
+## Buna AI salesperson — phone tests (BOT_TOKEN + webhook; no Gemini key needed, mock mode works)
+Run these in the bot chat — everything happens in Telegram, no web page.
+- [ ] `/start` → one plain message "ሰላም! እንኳን ወደ ቡና ኮርነር በደህና መጡ ☕" — **no buttons, no name**.
+- [ ] Chat a bit in Amharic ("ሰላም", "ማኪያቶ አለ?") — replies are conversational, no inline buttons, no menu dump.
+- [ ] Switch to English ("do you have croissant?") — the reply switches to English.
+- [ ] On roughly your 3rd message the bot asks your name once; answer "Abebe" → it greets you by name and never asks again.
+- [ ] Ask about a specific product ("tell me about the macchiato") — a short answer **and** the item widget card appears.
+- [ ] Say "I want 2 large macchiato" — the bot confirms; the cart now has 2× Large (140 ETB each).
+- [ ] Say "deliver it" → the bot asks your address; send it → it confirms (delivery adds 50 ETB).
+- [ ] Say "that's all, I'll pay" → a **Telegram Stars invoice** appears in the chat (amount = total ÷ 2.5, rounded up). Pay it.
+- [ ] After paying: thank-you message with your name + order id, and a 🧾 tracker widget; owner gets "🔔 New order".
+- [ ] Owner moves the order to Brewing → the tracker widget updates in place and a plain status message arrives.
+- [ ] Ask "can I see the full menu with photos?" → exactly one "☕ ሙሉ ምናሌ" button that opens the Mini App. This is the **only** time a web page is offered.
+- [ ] Sold out: set croissant to 0 in the owner tab, ask for one — the bot says it's sold out and suggests an alternative; nothing is added.
+- [ ] Try paying a stale invoice after the shop sold out of an item — Telegram shows the "sold out" message and refuses.
+- [ ] Memory: order, then later ask "what do I usually order?" — it remembers.
+- [ ] Offline: `npm run test:agent` and `npm run test:bot` — all checks pass (no key, no token, no network).
+- [ ] API (no key): `GET /api/ai/health` → `aiConfigured: false, mock: true`.
 
 ## Inventory — phone + API tests
 - [ ] Item page: an item at/below its low level shows "⚠️ Only X left today" (e.g. order croissants down or use the owner tab to set qty 3).
@@ -72,7 +77,7 @@ npm run test:auth
 - [ ] Tap size M on the card — the price updates to 110 ETB and M highlights.
 - [ ] Tap "➕ Add to cart" — the card updates to "✅ Added (1) — add another".
 - [ ] Tap it again — "✅ Added (2)".
-- [ ] Tap "🧾 Checkout" — the bot sends a checkout card; "🧾 Checkout & Pay" opens the Mini App at checkout with 2× Medium macchiato prefilled.
-- [ ] Place the order — a 🧾 tracker widget appears in the bot chat (Received → Brewing → Ready).
+- [ ] Tap "💳 Pay now" — a Stars invoice for 2× Medium macchiato (220 ETB → 88 Stars) appears in the chat; pay it.
+- [ ] After payment a 🧾 tracker widget appears in the bot chat (Received → Brewing → Ready).
 - [ ] Owner marks the order Brewing — the tracker widget updates in place (no new message).
 - [ ] Offline check (no token, no network): `npm run test:widgets` — all checks pass, both widgets under 4,096 compressed bytes, no external URLs/images in the HTML.

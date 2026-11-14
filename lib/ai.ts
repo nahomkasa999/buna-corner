@@ -26,8 +26,8 @@ import {
 
 export type AiLang = "am" | "en";
 
-const CHAT_MODEL = "gemini-3-flash-preview";
-const CHAT_FALLBACK_MODEL = "gemini-3.5-flash-lite";
+export const CHAT_MODEL = "gemini-3-flash-preview";
+export const CHAT_FALLBACK_MODEL = "gemini-3.5-flash-lite";
 const TTS_MODEL = "gemini-2.5-flash-preview-tts";
 const TTS_VOICE = "Kore";
 
@@ -43,7 +43,7 @@ export function aiConfigured(): boolean {
   return !!key && key !== PLACEHOLDER_KEY;
 }
 
-function getClient(): GoogleGenAI | null {
+export function getClient(): GoogleGenAI | null {
   if (!aiConfigured()) return null;
   return new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY as string,
@@ -60,14 +60,14 @@ export function detectLang(text: string): AiLang {
   return "en";
 }
 
-function menuContext(): string {
+export function menuContext(): string {
   return MENU_ITEMS.filter((m) => !m.hidden)
     .map((m) => `- ${m.name} (${m.amharicName}) — ${m.price} ETB, ${m.category}: ${m.description}`)
     .join("\n");
 }
 
 /** Compact live stock snapshot so the AI answers stock questions truthfully. */
-function stockContext(): string {
+export function stockContext(): string {
   return MENU_ITEMS.filter((m) => !m.hidden)
     .map((m) => {
       const left = stockLeft(m.id);
@@ -113,7 +113,7 @@ export function findMentionedItem(text: string) {
   );
 }
 
-function inStockPopular(limit = 2) {
+export function inStockPopular(limit = 2) {
   return MENU_ITEMS.filter((m) => m.popular && !m.hidden && stockLeft(m.id) > 0).slice(0, limit);
 }
 

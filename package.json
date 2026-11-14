@@ -29,6 +29,8 @@
     "seed": "tsx scripts/seed.ts",
     "start": "next start",
     "test:auth": "node scripts/test-auth.mjs",
+    "test:agent": "tsx scripts/test-agent.ts",
+    "test:bot": "tsx scripts/test-bot.ts",
     "test:widgets": "tsx scripts/test-widgets.ts"
   },
   "version": "0.1.0"

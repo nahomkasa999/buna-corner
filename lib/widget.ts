@@ -8,7 +8,7 @@
 // content (cannot be forwarded). Groups/inline/forwards are test-server only.
 //
 // grammY does not know sendWidget / widget_query yet, so everything here
-// uses raw fetch() calls to the Bot API, and the webhook route intercepts
+// uses raw Bot API calls (lib/tg.ts), and the webhook route intercepts
 // update.widget_query BEFORE the grammY dispatcher (grammY would drop the
 // unknown update type). Every function is no-throw when BOT_TOKEN is unset.
 //
@@ -23,7 +23,6 @@
 import { deflateSync } from "node:zlib";
 import {
   addToWidgetDraft,
-  checkStock,
   getDraft,
   getMenuItem,
   getOrder,
@@ -36,11 +35,13 @@ import {
   type OrderLine,
 } from "./store";
 import type { MenuItem } from "./data";
+import { sendCartInvoice } from "./checkout";
+import { tgCall, type TgResult } from "./tg";
 
 // ---------- size helpers ----------
 
-const SIZE_DELTA: Record<string, number> = { S: 0, M: 30, L: 60 };
-const SIZE_LABEL: Record<string, string> = { S: "Small", M: "Medium", L: "Large" };
+export const SIZE_DELTA: Record<string, number> = { S: 0, M: 30, L: 60 };
+export const SIZE_LABEL: Record<string, string> = { S: "Small", M: "Medium", L: "Large" };
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -62,7 +63,7 @@ export function widgetWithinLimits(html: string): boolean {
 
 /**
  * Item card: name, price, stock line, size buttons (only when the item has
- * a Size option group), Add to cart, Checkout. State in chat_data:
+ * a Size option group), Add to cart, Pay now. State in chat_data:
  * {i, p, s, q, a} = itemId, base price, size code, qty in draft, added flag.
  */
 export function buildItemWidget(item: MenuItem, stock: number): string {
@@ -75,7 +76,7 @@ export function buildItemWidget(item: MenuItem, stock: number): string {
     + `<div><h3>☕ ${esc(item.name)}</h3><div class=p>${esc(item.amharicName)} · ${item.category}</div>`
     + `<div><b id=pr>${item.price} ETB</b> · ${stockLine}</div>${sizeRow}`
     + `<button class=a id=ad onclick="ad()">➕ Add to cart</button>`
-    + `<button class=c onclick="q('checkout')">🧾 Checkout</button><div id=m>&nbsp;</div></div>`
+    + `<button class=c onclick="q('checkout')">💳 Pay now</button><div id=m>&nbsp;</div></div>`
     + `<script>var W=window.TelegramWidget,P=${item.price},SZ='S',QA=0,QN=0,I='${item.id}';`
     + `function st(){try{return JSON.parse(W.chatData||'{}')}catch(e){return{}}}`
     + `function draw(s){SZ=s.s||'S';QA=s.a||0;QN=s.q||0;var d=SZ==='M'?30:SZ==='L'?60:0;var e=document.getElementById('pr');if(e)e.textContent=(P+d)+' ETB';['S','M','L'].forEach(function(x){var b=document.getElementById('b'+x);if(b)b.className=SZ===x?'on':''});var a=document.getElementById('ad');if(a)a.textContent=QA?('✅ Added ('+QN+') — add another'):'➕ Add to cart';var m=document.getElementById('m');if(m)m.textContent=s.err||' ';}`
@@ -105,25 +106,6 @@ export function buildOrderWidget(order: Order): string {
 }
 
 // ---------- raw Bot API calls (grammY has no widget methods yet) ----------
-
-type TgResult = { ok: boolean; result?: unknown; reason?: string };
-
-async function tgCall(method: string, params: Record<string, unknown>): Promise<TgResult> {
-  const token = process.env.BOT_TOKEN;
-  if (!token) return { ok: false, reason: "BOT_TOKEN not configured" };
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    });
-    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; result?: unknown; description?: string };
-    if (!data.ok) return { ok: false, reason: data.description || `Telegram ${method} failed` };
-    return { ok: true, result: data.result };
-  } catch (e) {
-    return { ok: false, reason: e instanceof Error ? e.message : "network error" };
-  }
-}
 
 export async function sendWidgetRaw(
   chatId: number,
@@ -160,15 +142,6 @@ export async function editWidgetDataRaw(
 
 // ---------- sending widgets ----------
 
-function botUsername(): string {
-  return process.env.BOT_USERNAME || process.env.NEXT_PUBLIC_BOT_USERNAME || "Alerter_nazbot";
-}
-
-function shopUrl(startapp?: string): string {
-  const base = `https://t.me/${botUsername()}/shop`;
-  return startapp ? `${base}?startapp=${encodeURIComponent(startapp)}` : base;
-}
-
 /** Send an item card to a private chat; initialises its server-side state. */
 export async function sendItemWidget(
   chatId: number,
@@ -203,25 +176,6 @@ export async function updateOrderTrackerWidget(orderId: string): Promise<TgResul
   if (!order.trackerWidget) return { ok: false, reason: "no tracker widget" };
   const state = { o: order.id, s: order.status };
   return editWidgetDataRaw(order.trackerWidget.chatId, order.trackerWidget.messageId, state);
-}
-
-// ---------- checkout card (raw sendMessage, for widget "checkout" taps) ----------
-
-export async function sendCheckoutCardRaw(chatId: number, draftId: string): Promise<TgResult> {
-  const draft = getDraft(draftId);
-  if (!draft) return { ok: false, reason: "Draft not found" };
-  const webAppUrl = process.env.NEXT_PUBLIC_APP_URL || "";
-  const checkoutUrl = webAppUrl
-    ? `${webAppUrl}?view=checkout&draft=${draft.id}`
-    : shopUrl(`checkout_${draft.id}`);
-  const shop = webAppUrl || shopUrl();
-  const total = draft.lines.reduce((n, l) => n + l.unitPrice * l.qty, 0);
-  const text =
-    `🧾 *Your order*\n\n${draft.lines.map((l) => `• ${l.qty}× ${l.name} — ${l.unitPrice * l.qty} ETB`).join("\n")}\n\nTotal: *${total} ETB* (pickup)\nTap below to check out and pay.`;
-  const keyboard = webAppUrl
-    ? { inline_keyboard: [[{ text: "🧾 Checkout & Pay", web_app: { url: checkoutUrl } }], [{ text: "🛒 Open shop", web_app: { url: shop } }]] }
-    : { inline_keyboard: [[{ text: "🧾 Checkout & Pay", url: checkoutUrl }], [{ text: "🛒 Open shop", url: shop }]] };
-  return tgCall("sendMessage", { chat_id: chatId, text, parse_mode: "Markdown", reply_markup: keyboard });
 }
 
 // ---------- widget_query handling ----------
@@ -323,17 +277,20 @@ export async function handleWidgetQuery(q: WidgetQuery): Promise<{
       return { ok: true, answered, edited, action: "add" };
     }
 
-    // --- checkout : send the checkout card for the user's widget draft ---
+    // --- checkout : send a Telegram Stars invoice for the user's cart, in this chat ---
     if (data === "checkout") {
-      const draftId = getWidgetDraftId(userId);
-      const draft = draftId ? getDraft(draftId) : undefined;
-      if (!draft || draft.lines.length === 0) {
-        await answer({ err: "Your cart is empty — tap Add to cart first." });
-        return { ok: false, answered: true, edited: false, action: "checkout", note: "empty cart" };
+      const sent = await sendCartInvoice(userId, chatId);
+      if (!sent.ok) {
+        const err = sent.reason === "empty"
+          ? "Your cart is empty — tap Add to cart first."
+          : sent.reason === "stock"
+            ? sent.detail ?? "Something is sold out"
+            : "Couldn't send the invoice, try again.";
+        await answer({ err });
+        return { ok: false, answered: true, edited: false, action: "checkout", note: sent.reason === "empty" ? "empty cart" : sent.reason };
       }
-      const sent = await sendCheckoutCardRaw(chatId, draft.id);
       const answered = await answer({ ok: 1 });
-      return { ok: sent.ok, answered, edited: false, action: "checkout", note: sent.ok ? undefined : sent.reason };
+      return { ok: true, answered, edited: false, action: "checkout" };
     }
 
     // --- refresh:<orderId> : re-read the order and update the tracker ---

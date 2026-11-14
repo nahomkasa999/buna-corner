@@ -44,6 +44,9 @@ npm run test:auth            # initData HMAC validation checks
 3. (Optional, same screen) set the menu button text to `☕ Order coffee`.
 4. Set the webhook so the bot receives updates:
    `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<APP_URL>/api/bot`
+   Leave `allowed_updates` unset (default). If you ever set it, it must
+   include `message`, `pre_checkout_query` (Stars payments) and
+   `widget_query` (HTML widget taps).
 5. Add the bot as admin to your channel and set `CHANNEL_ID`
    (e.g. `@bunacorner` or `-100…`).
 6. Get your Telegram user id from **@userinfobot** → `OWNER_TELEGRAM_ID`.
@@ -51,43 +54,68 @@ npm run test:auth            # initData HMAC validation checks
    Item deep link: `https://t.me/Alerter_nazbot/shop?startapp=item_macchiato`
    Referral link: `https://t.me/Alerter_nazbot/shop?startapp=ref_<your-id>`
 
-## AI barista — Buna AI (Amharic-first, remembers you, talks back)
+## The bot is the shop — Buna AI as a salesperson, all inside Telegram
 
-- **In the Mini App:** floating 💬 button opens a chat panel. Amharic by
-  default, EN/አማ toggle, "Voice replies" toggle, and a 🔊 Listen button on
-  every AI reply. Item pages have a "🔊 Listen to description" button.
-- **In the bot:** `/start` greets you with the AI (by name, Amharic), and
-  any free-text message to the bot gets an AI reply. `/checkout` (or saying
-  "yes, order it" in chat) builds a draft from what the AI remembers you
-  like and sends a checkout card with a "🧾 Checkout & Pay" button that
-  opens the Mini App at checkout with the draft prefilled.
-- **How it works:** `lib/ai.ts` — Gemini `gemini-3-flash-preview` for chat
-  (falls back to `gemini-3.5-flash-lite`), `gemini-2.5-flash-preview-tts`
-  (voice "Kore") for speech. The system prompt is the warm Ethiopian
-  barista; it knows the full menu + live stock, so it never sells a
-  sold-out item and suggests an in-stock alternative instead.
-- **Memory:** LangChain-style per-user memory implemented by hand in
-  `lib/store.ts` — last 12 turns + prefs (language, favourites, order
-  count, last order) per Telegram user id, shared between the Mini App
-  and the bot. `learnFromOrder()` updates favourites on every order.
-  LangChain swap point: `chatWithMemory()` in `lib/ai.ts` is the single
-  seam — replace its Gemini call with a LangChain chain
-  (`@langchain/google-genai` + a Postgres-backed chat history) and keep
-  the `{reply, lang}` shape; routes, bot and frontend need no change.
-  (LangChain is deliberately NOT a hard dependency today — the hand-rolled
-  memory is ~40 lines and has zero extra install weight.)
-- **No key = mock mode:** canned Amharic replies (stock-aware), no audio,
-  no network calls, never a crash. Set `GEMINI_API_KEY` in Vercel env vars
-  to go live.
-- **Cost:** Gemini Flash is pay-as-you-go and cheap — a few cents per
-  thousand short chats; TTS is billed per character. No key, no bill.
-- **Inventory:** every menu item has live stock (`lib/inventory.ts` seed:
-  drinks 20–50 cups/day, food 15–30 portions, beans 10–12 bags; low
-  at 5, beans at 3). Orders decrement stock; over-orders are rejected
-  with the amount left ("Only 3 Croissants left"); stock 0 flips the
-  item sold out. Owner dashboard → 📦 Inventory tab: restock +10 or set
-  quantity. Daily sales summary includes low-stock items. Stock is
-  in-memory like the rest of the demo store (resets on redeploy).
+Customers never have to open a web page to buy. The bot **is** the shop
+assistant: it talks like a person, sells, and takes payment right in the chat.
+
+**A typical chat**
+
+1. `/start` → the bot just says *"ሰላም! እንኳን ወደ ቡና ኮርነር በደህና መጡ ☕"*.
+   No buttons, no menu, no name yet.
+2. The customer talks (Amharic or English — it follows them). The AI
+   recommends, answers, upsells gently. It never dumps a menu or says "tap".
+3. **After ~3 messages** it asks their name once, naturally, then uses it.
+4. Customer asks about a **specific product** → the AI answers in a sentence
+   *and* sends that product's interactive **HTML widget** (Bot API 10.4):
+   size buttons, "➕ Add to cart", "💳 Pay now" — all inside the bubble.
+5. Customer says what they want → the AI puts it in their cart (stock,
+   sizes and quantities are validated server-side; sold-out items are
+   refused). Pickup is free, delivery is +50 ETB and the AI asks for the
+   address in chat.
+6. Customer is done / says "pay" → a native **Telegram Stars invoice** (XTR)
+   appears **in the chat** and they pay there. On `successful_payment` the
+   order is created, stock drops, the owner is notified, the customer gets a
+   thank-you and a live **order-tracker widget** that updates in place as
+   the owner moves the order to Brewing/Ready.
+7. **Only if they ask to see more** (full menu, photos, all the details) the
+   bot sends one "☕ Full menu" button that opens the Mini App. That is the
+   only time a web page is offered.
+
+Commands exist but are never pushed on the customer: `/orders` (text
+status), `/checkout` (invoice for the current cart), `/shop` (Mini App link),
+`/stock` (owner only).
+
+**Payments — Telegram Stars.** Menu prices are in ETB; the invoice converts
+at `ETB_PER_STAR` (default 2.5, rounded up). Stars need no provider token.
+Flow: `sendInvoice` (one price line, the order itemised in the description)
+→ `pre_checkout_query` (stock, amount, not-already-paid; answered instantly)
+→ `successful_payment` (order created, idempotent on the charge id; if the
+order can't be found the Stars are refunded automatically with
+`refundStarPayment`). The invoice is an immutable snapshot of the cart, so
+adding items afterwards can't change what was paid for. Code: `lib/checkout.ts`.
+
+**How the AI works.** `lib/agent.ts` — Gemini (`gemini-3-flash-preview`,
+fallback `gemini-3.5-flash-lite`) answers with JSON `{reply, actions}`;
+actions are `show_item`, `add_to_cart`, `remove_from_cart`, `set_delivery`,
+`checkout`, `show_more`. The model proposes, the server validates and
+executes. The system prompt carries the menu with ids, live stock, the
+customer's name/favourites and their current cart. It is honest that it is
+the shop's AI if asked.
+
+- **No key = mock salesperson.** Without `GEMINI_API_KEY` (or if Gemini
+  errors) a rule-based Amharic/English salesperson runs the same flow
+  (item cards, cart, delivery, pay, name after 3 turns), so the bot never
+  goes quiet.
+- **Memory:** last 12 turns + prefs (language, favourites, order count) +
+  the name they told us, per Telegram user id — `lib/store.ts`
+  (in-memory; Prisma-ready shape). `chatWithMemory()` in `lib/ai.ts` remains
+  the seam used by the `/api/ai/*` routes.
+- **Cost:** Gemini Flash is a few cents per thousand short chats.
+
+**Mini App.** Still there as the "see more" destination (full menu with
+photos, loyalty stamps, owner dashboard). The AI chat panel was removed from
+it — the AI lives in the bot.
 
 ## HTML widgets (Bot API 10.4) — interactive cards inside the bot chat
 
@@ -98,7 +126,8 @@ the customer leaving the chat.
 - **What happens:** ask the bot about an item ("tell me about macchiato",
   "I like croissant") and the AI answers in text **and** sends the item
   card right after it. The card has size buttons (S/M/L), an "➕ Add to
-  cart" button and a "🧾 Checkout" button — all working inside the chat.
+  cart" button and a "💳 Pay now" button (sends the Stars invoice) — all
+  working inside the chat.
   Place an order and a 🧾 tracker widget appears in the chat; when the
   owner moves it to Brewing/Ready, the widget updates **in place**.
 - **How it works:** `lib/widget.ts` — one self-contained HTML document per
@@ -130,6 +159,7 @@ vercel deploy   # or push to GitHub and import the repo in Vercel
 Set env vars in Vercel: `BOT_TOKEN`, `BOT_USERNAME`,
 `NEXT_PUBLIC_BOT_USERNAME`, `OWNER_TELEGRAM_ID`, `CHANNEL_ID`,
 `GEMINI_API_KEY` (real key for Buna AI; without it the AI runs in mock mode),
+`ETB_PER_STAR` (Stars conversion, default 2.5),
 `NEXT_PUBLIC_APP_URL` (your `https://…vercel.app` URL). Then repeat
 BotFather step 2 with that URL and step 4 for the webhook. No database
 is required for the demo (in-memory store); for real persistence see below.
@@ -144,7 +174,7 @@ is required for the demo (in-memory store); for real persistence see below.
 | `POST /api/orders` | Create order (`BC-XXXX`, stamps, owner notify); decrements stock, rejects over-orders, teaches the AI your favourites |
 | `GET /api/orders?userId=`, `GET /api/orders/[id]` | Orders |
 | `PATCH /api/orders/[id]` | Owner-only status change (also notifies customer) |
-| `GET /api/drafts/[id]` | Bot-checkout draft (prefills the Mini App cart) |
+| `GET /api/drafts/[id]` | Draft/cart (prefills the Mini App cart) |
 | `GET /api/inventory` | Owner-only live stock list |
 | `PATCH /api/admin/inventory` | Owner-only restock / set quantity |
 | `POST /api/ai/chat` | Buna AI chat `{message?, greet?, lang?, voice?}` → `{reply, lang, audioBase64?}` (mock without a key) |
@@ -156,7 +186,7 @@ is required for the demo (in-memory store); for real persistence see below.
 | `GET /api/admin/sales?date=` | Owner-only daily summary |
 | `POST /api/admin/menu` | Owner-only add/edit/hide/toggle |
 | `POST /api/channel/post` | Owner-only: post item to channel with Order-now button |
-| `POST /api/bot` | grammY webhook (503 if `BOT_TOKEN` missing) |
+| `POST /api/bot` | grammY webhook: chat, Stars `pre_checkout_query` / `successful_payment`, widget queries (503 if `BOT_TOKEN` missing) |
 
 Demo mode: requests without valid `initData` are served as demo user
 `999999` (or `x-demo-user: <id>`); owner routes also accept

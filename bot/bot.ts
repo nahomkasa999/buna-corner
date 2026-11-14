@@ -1,102 +1,55 @@
 import { Bot, InlineKeyboard } from "grammy";
-import { getMenuItem, getOrder } from "../lib/store";
-import { getOrCreateUserMemory } from "../lib/store";
-import { getInventory, createDraft } from "../lib/store";
-import { chatWithMemory, findMentionedItem, greetUser } from "../lib/ai";
-import { sendItemWidget } from "../lib/widget";
+import { getMenuItem, getOrCreateUserMemory, getOrder, getOrders, getInventory } from "../lib/store";
+import { runDeliveryActions, salesTurn, startGreeting } from "../lib/agent";
+import { completePayment, sendCartInvoice, validatePreCheckout } from "../lib/checkout";
+import { sendItemWidget, sendOrderTrackerWidget } from "../lib/widget";
+import { botUsername, miniAppKeyboard, shopUrl, tgCall } from "../lib/tg";
+
+export { botUsername, shopUrl };
 
 let botInstance: Bot | null = null;
 
-export function botUsername(): string {
-  return process.env.BOT_USERNAME || process.env.NEXT_PUBLIC_BOT_USERNAME || "Alerter_nazbot";
-}
-
-export function shopUrl(startapp?: string): string {
-  const base = `https://t.me/${botUsername()}/shop`;
-  return startapp ? `${base}?startapp=${encodeURIComponent(startapp)}` : base;
-}
-
-/** "Yes, order it" / "confirm" / "እሺ" style confirmations in bot chat. */
-export function isConfirmation(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  return /^(yes|yeah|ok|okay|confirm|order it|place it|do it|እሺ|አዝዝ|ይሁን|አዎ|እወድ)[!. ]*$/.test(t)
-    || t.includes("order it") || t.includes("confirm my order") || t.includes("አዝዝ");
-}
-
 /**
- * Build a checkout draft from what the AI remembers the customer likes
- * (favourite item, 1×) and the checkout card for it: order summary +
- * "Checkout & Pay" web_app button opening the Mini App at checkout with
- * the draft prefilled, plus an "Open shop" button.
+ * The bot is a salesperson, not a menu: customers just talk to it in the
+ * chat. No inline keyboards on replies; the only buttons are the Stars pay
+ * button on the invoice, the item widget (Bot API 10.4) when they ask about a
+ * product, and a single "Full menu" link when they ask to see more.
  */
-export async function buildCheckoutMessage(userId: number, webAppUrl: string): Promise<{ text: string; kb: InlineKeyboard }> {
-  const mem = getOrCreateUserMemory(userId);
-  const favId = mem.prefs.favourites[0];
-  const item = favId ? getMenuItem(favId) : undefined;
-  const shop = webAppUrl || shopUrl();
-  if (!item) {
-    return {
-      text: "What would you like to order? Tell me — e.g. *a macchiato* — or tap below to browse the menu.",
-      kb: new InlineKeyboard().webApp("☕ Open shop", shop),
-    };
-  }
-  const draft = createDraft(userId, [{ id: item.id, name: item.name, qty: 1, unitPrice: item.price, options: {} }], "pickup");
-  const checkoutUrl = webAppUrl ? `${webAppUrl}?view=checkout&draft=${draft.id}` : shopUrl(`checkout_${draft.id}`);
-  const kb = webAppUrl
-    ? new InlineKeyboard().webApp("🧾 Checkout & Pay", checkoutUrl).row().webApp("🛒 Open shop", shop)
-    : new InlineKeyboard().url("🧾 Checkout & Pay", checkoutUrl).row().url("🛒 Open shop", shop);
-  return {
-    text: `🧾 *Your order*\n\n• 1× ${item.name} — ${item.price} ETB\n\nTotal: *${item.price} ETB* (pickup)\nTap below to check out and pay.`,
-    kb,
-  };
-}
-
 export function createBot(): Bot | null {
   const token = process.env.BOT_TOKEN;
   if (!token) return null;
   if (botInstance) return botInstance;
   const bot = new Bot(token);
-  const webAppUrl = process.env.NEXT_PUBLIC_APP_URL || "";
 
+  // /start -> just say selam (Amharic). No buttons, no name yet — the AI asks
+  // for the name naturally after a few messages.
   bot.command("start", async (ctx) => {
     const payload = ctx.match?.trim() || "";
-    const shop = webAppUrl || shopUrl();
-    const kb = new InlineKeyboard()
-      .webApp("☕ Order", shop)
-      .row()
-      .webApp("💬 Ask Buna AI", webAppUrl ? `${webAppUrl}?startapp=ai` : shop);
-    // AI greeting (Amharic by default) — falls back to the static greeting
-    // in mock mode (no GEMINI_API_KEY) or on any AI error. Never crashes.
-    let text: string;
-    try {
-      const firstName = ctx.from?.first_name ?? "friend";
-      const lang = ctx.from?.language_code === "am" ? "am" : undefined;
-      const g = await greetUser(ctx.from?.id ?? 0, firstName, lang);
-      text = g.reply;
-    } catch {
-      text = "☕ Welcome to *Buna Corner* — Addis Ababa!\n\nFresh Yirgacheffe, traditional jebena buna, and beans roasted in-house. Tap below to open the shop.";
+    const userId = ctx.from?.id ?? 0;
+    await ctx.reply(startGreeting(userId, ctx.from?.first_name ?? "friend"));
+    if (payload.startsWith("ref_")) {
+      await ctx.reply("🎁 ጓደኛዎ ጋብዘውዎታል — የመጀመሪያ ትዕዛዝዎ ላይ ነፃ መጠጥ ያገኛሉ!");
     }
-    if (payload.startsWith("ref_")) text += `\n\n🎁 You were invited by a friend — you both get a free drink on your first order!`;
     if (payload.startsWith("item_")) {
       const item = getMenuItem(payload.replace("item_", ""));
-      if (item) {
-        text = `☕ *${item.name}*\n${item.description}\n\n${item.price} ETB — tap below to order it.`;
-        // Also send the interactive item card (Bot API 10.4 widget).
-        sendItemWidget(ctx.chat.id, item.id).catch(() => undefined);
-      }
+      if (item) sendItemWidget(ctx.chat.id, item.id).catch(() => undefined);
     }
-    await ctx.reply(text, { parse_mode: "Markdown", reply_markup: kb });
   });
 
-  bot.command("shop", async (ctx) => {
-    await ctx.reply("☕ Open the Buna Corner shop:", {
-      reply_markup: new InlineKeyboard().webApp("Open shop", webAppUrl || shopUrl()),
-    });
-  });
-
+  // Plain-text order status — the live tracker widget is sent on every paid order.
   bot.command("orders", async (ctx) => {
-    await ctx.reply("Your orders live in the Mini App — tap below:", {
-      reply_markup: new InlineKeyboard().webApp("My orders", webAppUrl || shopUrl()),
+    const mine = getOrders(ctx.from?.id).slice(0, 3);
+    if (mine.length === 0) {
+      await ctx.reply("እስካሁን ምንም ትዕዛዝ የለዎትም — ምን ልጠጣልዎት? ☕");
+      return;
+    }
+    await ctx.reply(mine.map((o) => `${o.id} — ${o.status} — ${o.total} ETB`).join("\n"));
+  });
+
+  // Explicit "see more" — the one place a link to the Mini App is the answer.
+  bot.command("shop", async (ctx) => {
+    await ctx.reply("ሙሉ ምናሌውን፣ ፎቶዎችንና ዝርዝሩን እዚህ ያገኛሉ 👇", {
+      reply_markup: miniAppKeyboard("☕ ሙሉ ምናሌ") as never,
     });
   });
 
@@ -110,40 +63,69 @@ export function createBot(): Bot | null {
     const lines = inv.map((i) =>
       `${i.qty <= 0 ? "🔴" : i.low ? "🟠" : "🟢"} ${i.name} — ${i.qty} ${i.unit}${i.low && i.qty > 0 ? ` (low — alert at ${i.lowAt})` : ""}${i.qty <= 0 ? " — SOLD OUT" : ""}`,
     );
-    await ctx.reply(`📦 *Inventory*\n\n${lines.join("\n")}`);
+    await ctx.reply(`📦 Inventory\n\n${lines.join("\n")}`);
   });
 
+  // /checkout -> straight to the in-chat Stars invoice for whatever is in the cart.
   bot.command("checkout", async (ctx) => {
-    const msg = await buildCheckoutMessage(ctx.from?.id ?? 0, webAppUrl);
-    await ctx.reply(msg.text, { parse_mode: "Markdown", reply_markup: msg.kb });
+    const r = await sendCartInvoice(ctx.from?.id ?? 0, ctx.chat.id);
+    if (!r.ok) {
+      await ctx.reply(
+        r.reason === "empty" ? "ጋሪዎ ባዶ ነው — ምን ልጠጣልዎት? ☕" : r.reason === "stock" ? r.detail ?? "Something is sold out" : r.reason === "need_address" ? "ወደ የት ልላክልዎት? አድራሻዎን ይጻፉልኝ 📍" : "ይቅርታ፣ ክፍያውን መላክ አልቻልኩም።",
+      );
+    }
   });
+
+  // ---- payments (Telegram Stars) ----
+
+  bot.on("pre_checkout_query", async (ctx) => {
+    const q = ctx.preCheckoutQuery;
+    const v = validatePreCheckout({ currency: q.currency, total_amount: q.total_amount, invoice_payload: q.invoice_payload });
+    // Must answer within 10 seconds — validation is synchronous and instant.
+    if (v.ok) await ctx.answerPreCheckoutQuery(true);
+    else await ctx.answerPreCheckoutQuery(false, v.message);
+  });
+
+  bot.on("message:successful_payment", async (ctx) => {
+    const p = ctx.message.successful_payment;
+    const userId = ctx.from.id;
+    const done = completePayment(
+      { id: userId, first_name: ctx.from.first_name },
+      {
+        currency: p.currency,
+        total_amount: p.total_amount,
+        invoice_payload: p.invoice_payload,
+        telegram_payment_charge_id: p.telegram_payment_charge_id,
+      },
+    );
+    if (!done.ok) {
+      // Money was taken but we can't find the order (e.g. state lost on a redeploy): give it back.
+      await tgCall("refundStarPayment", { user_id: userId, telegram_payment_charge_id: p.telegram_payment_charge_id });
+      await ctx.reply("ይቅርታ፣ ትዕዛዝዎን ማግኘት አልቻልኩም — ክፍያዎ ተመልሶልዎታል። እባክዎ እንደገና ይሞክሩ 🙏");
+      return;
+    }
+    if (done.duplicate) return;
+    const { order } = done;
+    const mem = getOrCreateUserMemory(userId);
+    const who = mem.callName ? `${mem.callName}፣ ` : "";
+    const where = order.fulfillment === "delivery" ? `ወደ ${order.address ?? "አድራሻዎ"} እናደርሳለን 🛵` : "ሲዘጋጅ እናሳውቅዎታለን — ቡና ኮርነር፣ ቦሌ ይውሰዱ ☕";
+    await ctx.reply(`${who}አመሰግናለሁ! ክፍያዎ ደርሶናል ✅\nትዕዛዝ ${order.id} ተቀብለናል — ${where}`);
+    notifyOwnerNewOrder(order.id).catch(() => undefined);
+    sendOrderTrackerWidget(order.id).catch(() => undefined);
+  });
+
+  // ---- everything else is a conversation with the salesperson ----
 
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text.trim();
     const userId = ctx.from?.id ?? 0;
-    const firstName = ctx.from?.first_name ?? "friend";
-    // "Yes, order it" style confirmation in bot chat -> build a checkout draft
-    // from what the AI remembers the customer likes, then send the checkout card.
-    if (isConfirmation(text)) {
-      const msg = await buildCheckoutMessage(userId, webAppUrl);
-      await ctx.reply(msg.text, { parse_mode: "Markdown", reply_markup: msg.kb });
-      return;
-    }
-    // Free-text -> the AI barista (same memory as the Mini App for this user).
+    ctx.replyWithChatAction("typing").catch(() => undefined);
     try {
-      const lang = ctx.from?.language_code === "am" ? "am" : undefined;
-      const r = await chatWithMemory(userId, firstName, text, lang);
-      await ctx.reply(r.reply, {
-        reply_markup: new InlineKeyboard().webApp("☕ Open shop", webAppUrl || shopUrl()),
-      });
-      // Asked about a specific item ("tell me about macchiato", "I like X")?
-      // Send its interactive card (Bot API 10.4 widget) right after the text.
-      const mentioned = findMentionedItem(text);
-      if (mentioned) sendItemWidget(ctx.chat.id, mentioned.id).catch(() => undefined);
+      const r = await salesTurn(userId, ctx.from?.first_name ?? "friend", text);
+      await ctx.reply(r.reply);
+      if (r.deliver.length) await runDeliveryActions(ctx.chat.id, userId, r.deliver, r.lang);
     } catch {
-      await ctx.reply("☕ Hi! Tap below to open Buna Corner and order:", {
-        reply_markup: new InlineKeyboard().webApp("Open Buna Corner", webAppUrl || shopUrl()),
-      });
+      await ctx.reply("☕ ይቅርታ፣ ትንሽ ተቸገርኩ — እባክዎ እንደገና ይጻፉልኝ።");
     }
   });
 
@@ -158,11 +140,9 @@ export async function notifyOrderStatus(orderId: string): Promise<boolean> {
     const order = getOrder(orderId);
     if (!bot || !order) return false;
     const statusEmoji: Record<string, string> = { Received: "📥", Brewing: "☕", Ready: "✅", "Out for delivery": "🛵", Completed: "🎉", Cancelled: "❌" };
-    const kb = new InlineKeyboard().webApp("Track order", process.env.NEXT_PUBLIC_APP_URL || shopUrl());
     await bot.api.sendMessage(
       order.userId,
-      `${statusEmoji[order.status] ?? "☕"} *Order ${order.id}* — ${order.status}\n\n${order.lines.map((l) => `• ${l.qty}× ${l.name}`).join("\n")}\nTotal: ${order.total} ETB`,
-      { parse_mode: "Markdown", reply_markup: kb },
+      `${statusEmoji[order.status] ?? "☕"} Order ${order.id} — ${order.status}\n\n${order.lines.map((l) => `• ${l.qty}× ${l.name}`).join("\n")}\nTotal: ${order.total} ETB`,
     );
     return true;
   } catch { return false; }

@@ -1,21 +1,37 @@
 # What could not be done (and why)
 
-## Real payments — NOT done (mock only)
-Telebirr and Chapa are mock screens: a mock pay code is shown and "I paid"
-places the order. Real Telebirr/Chapa integration needs a merchant account,
-API credentials, and a server-side payment verification webhook — none of
-which exist for this fictional demo shop. The checkout is structured so a
-real gateway can be swapped in: replace the mock step in `app/page.tsx`
-(checkout view) and verify the payment in `POST /api/orders` before
-creating the order.
+## Payments
 
-## Telegram Stars payments / Stars subscriptions — NOT done (mock only)
-Stars payments need a live bot with a Stars invoice flow (`sendInvoice`
-with `XTR` currency) and a `pre_checkout_query` handler. The subscription
-endpoint accepts `method: "stars"` and records it, but no invoice is ever
-sent. Wire `bot/bot.ts` to `sendInvoice` when a real bot token is configured.
+**In the bot chat: real Telegram Stars (XTR) payments — implemented.**
+`lib/checkout.ts` sends a native `sendInvoice`, answers `pre_checkout_query`
+and creates the order on `successful_payment` (idempotent on the charge id;
+automatic `refundStarPayment` if the order can't be found). What is NOT done:
+- **Not tested against live Telegram.** Everything is covered by offline
+  tests that record the Bot API calls (`npm run test:agent`, `test:bot`);
+  nobody can confirm a real Stars payment without a live bot token. Do a
+  1-Star test purchase before going live.
+- **ETB → Stars is a fixed rate** (`ETB_PER_STAR`, default 2.5) — not a live
+  exchange rate. Check it against what a Star actually pays out to you.
+- **Stars are not ETB.** The shop receives Stars and withdraws them via
+  Telegram/Fragment; there is no Telebirr/Chapa money flow in the chat.
+- **No customer-facing refunds/cancellation flow.** `Order.chargeId` is stored
+  so the owner (or a future `/refund`) can call `refundStarPayment`.
+- **Stars subscriptions (Beans of the Month) are still mock** — the Mini App
+  subscription endpoint records `method: "stars"` but no recurring invoice
+  is sent.
 
-## Persistence — in-memory only
+**In the Mini App (the "see more" page): Telebirr and Chapa are mock screens**
+— a mock pay code is shown and "I paid" places the order. Real
+Telebirr/Chapa needs a merchant account, API credentials and a server-side
+verification webhook; none exist for this fictional demo shop.
+
+## Persistence — in-memory only (a real-money risk now)
+**Before taking real Stars, move the store to a database.** Invoices point at
+an in-memory draft; on Vercel a different serverless instance (or a redeploy)
+may not have it, so `pre_checkout_query` would refuse a valid invoice
+("this order expired — ask me to send a new one"). Nothing is charged in that
+case, but the customer has to start the order again. Same for the cart, name
+and chat memory.
 Orders, loyalty, subscriptions and menu edits live in `lib/store.ts`
 (process memory). They reset on every redeploy/restart and do not sync
 across Vercel serverless instances. This is deliberate for a zero-setup
@@ -43,8 +59,18 @@ in a browser it falls back to a typed address. No map is rendered.
 Photos are Unsplash placeholders, not the shop's real photos.
 
 ## Buna AI — limits
-- **No Gemini key = mock mode.** Canned Amharic replies, no voice at all.
-  Set `GEMINI_API_KEY` in Vercel env vars for real chat + TTS. The key is
+- **The AI lives in the bot only.** The Mini App no longer has an AI chat
+  panel; the old `/api/ai/*` routes still exist (text + TTS) but nothing in
+  the shop UI calls them. The bot replies in text only — no voice messages.
+- **No Gemini key = mock mode.** A rule-based salesperson (still does item
+  cards, cart, delivery, pay, name-after-3-turns, in Amharic/English) — it is
+  much less flexible than the live model.
+- **The live JSON path is untested against real Gemini** (no key in dev):
+  the parser is covered by unit checks and any unparseable/failed reply
+  falls back to the mock salesperson or the plain text, but prompt quality
+  (does it really stay to 1-3 sentences, ask the name at the right time) needs
+  a live try.
+- **Set `GEMINI_API_KEY`** in Vercel env vars for the live model. The key is
   never in the repo (`.env.example` carries only the `TEST_KEY_1`
   placeholder).
 - **Memory is in-memory** (per-user history + favourites in `lib/store.ts`).

@@ -35,6 +35,8 @@ export interface Order {
   freeDrinkUsed?: boolean;
   /** Order-tracker widget sent to the customer (Bot API 10.4) — set when sent. */
   trackerWidget?: { chatId: number; messageId: number };
+  /** Telegram Stars payment charge id (needed for refunds). */
+  chargeId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -50,9 +52,15 @@ export function isLowStock(s: StockLevel): boolean { return s.qty > 0 && s.qty <
 // Shape is Prisma-ready: one row per user with a JSON history + prefs.
 // In-memory for the demo — resets on redeploy, same as the rest of this store.
 export interface ChatTurn { role: "user" | "ai"; text: string; at: string; }
+export type NameState = "unknown" | "asked" | "known" | "declined";
 export interface UserMemory {
   userId: number;
-  name: string;
+  name: string; // Telegram first name (for the API); NOT used to greet in the bot
+  /** The name the customer told us in chat — the bot asks for it after a few turns. */
+  callName?: string;
+  nameState: NameState;
+  /** Number of customer messages so far (drives "ask their name after a few turns"). */
+  userTurns: number;
   history: ChatTurn[]; // last 12 turns, oldest first
   prefs: { lang: "am" | "en"; favourites: string[]; orderCount: number; lastOrderId?: string };
   updatedAt: string;
@@ -65,6 +73,12 @@ export interface DraftOrder {
   userId: number;
   lines: OrderLine[];
   fulfillment: Fulfillment;
+  address?: string;
+  /** Set on an invoice snapshot: Stars amount the customer was asked to pay. */
+  invoiceStars?: number;
+  /** Set once paid: Telegram charge id + resulting order (idempotency). */
+  paidChargeId?: string;
+  orderId?: string;
   createdAt: string;
 }
 
@@ -316,6 +330,7 @@ export function getOrCreateUserMemory(userId: number, name?: string): UserMemory
   if (!s.memories[key]) {
     s.memories[key] = {
       userId, name: name || "Guest",
+      nameState: "unknown", userTurns: 0,
       history: [],
       prefs: { lang: "am", favourites: [], orderCount: 0 },
       updatedAt: new Date().toISOString(),
@@ -409,4 +424,57 @@ export function addToWidgetDraft(userId: number, line: OrderLine): { draft: Draf
   else draft.lines.push({ ...line });
   const lineQty = draft.lines.filter((l) => l.id === line.id).reduce((n, l) => n + l.qty, 0);
   return { draft, lineQty };
+}
+
+// ================= Sales-agent state (name, cart) =================
+
+/** Count one customer message; returns the new total. */
+export function noteUserTurn(userId: number): number {
+  const mem = getOrCreateUserMemory(userId);
+  mem.userTurns = (mem.userTurns ?? 0) + 1;
+  return mem.userTurns;
+}
+
+export function setCallName(userId: number, name: string): void {
+  const mem = getOrCreateUserMemory(userId);
+  mem.callName = name;
+  mem.nameState = "known";
+}
+
+export function setNameState(userId: number, state: NameState): void {
+  getOrCreateUserMemory(userId).nameState = state;
+}
+
+/** The customer's open cart (the widget/agent draft) if it has any lines. */
+export function getCart(userId: number): DraftOrder | undefined {
+  const id = getWidgetDraftId(userId);
+  const d = id ? getDraft(id) : undefined;
+  return d && d.lines.length > 0 ? d : undefined;
+}
+
+export function clearCart(userId: number): void {
+  delete getStore().widgetDrafts[String(userId)];
+}
+
+export function removeFromCart(userId: number, itemId: string): boolean {
+  const d = getCart(userId);
+  if (!d) return false;
+  const before = d.lines.length;
+  d.lines = d.lines.filter((l) => l.id !== itemId);
+  return d.lines.length < before;
+}
+
+/** Set pickup/delivery (+ address) on the open cart, creating it if needed. */
+export function setCartDelivery(userId: number, fulfillment: Fulfillment, address?: string): DraftOrder {
+  const s = getStore();
+  let d = getCart(userId);
+  if (!d) {
+    const id = s.widgetDrafts[String(userId)];
+    d = (id ? s.drafts[id] : undefined) ?? createDraft(userId, [], "pickup");
+    s.widgetDrafts[String(userId)] = d.id;
+  }
+  d.fulfillment = fulfillment;
+  if (fulfillment === "pickup") d.address = undefined;
+  else if (address) d.address = address;
+  return d;
 }

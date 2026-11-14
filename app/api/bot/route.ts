@@ -23,7 +23,7 @@ export async function POST(req: Request) {
   if (!bot) {
     return NextResponse.json({ ok: false, error: "BOT_TOKEN not configured" }, { status: 503 });
   }
-  const handler = webhookCallback(bot, "std/http");
+  const handler = webhookCallback(bot, "std/http", { timeoutMilliseconds: 50_000 });
   return handler(req as unknown as Parameters<typeof handler>[0]);
 }
 

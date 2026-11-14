@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { TelegramProvider, useTelegram } from "@/components/TelegramProvider";
-import BunaAIChat from "@/components/BunaAIChat";
 import { CATEGORIES, SUBSCRIPTION_PLAN, type MenuItem } from "@/lib/data";
 import { formatETB } from "@/lib/format";
 import type { Order, OrderStatus } from "@/lib/store";
@@ -67,7 +66,6 @@ function StoreApp() {
   const [toast, setToast] = useState("");
   const [qty, setQty] = useState(1);
   const [selOptions, setSelOptions] = useState<Record<string, string>>({});
-  const [aiOpen, setAiOpen] = useState(false);
   const [describeText, setDescribeText] = useState("");
   const [describing, setDescribing] = useState(false);
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
@@ -135,8 +133,6 @@ function StoreApp() {
           setView("checkout");
         }
       }).catch(() => undefined);
-    } else if (startParam === "ai") {
-      setAiOpen(true);
     }
   }, [startParam]);
 
@@ -723,9 +719,6 @@ function StoreApp() {
           <p className="mt-4 text-[11px] leading-relaxed text-coffee-400">Channel posting needs BOT_TOKEN + CHANNEL_ID (and the bot as channel admin). Without them the button returns a clear error instead of crashing.</p>
         </main>
       )}
-
-      {/* Buna AI — floating barista chat */}
-      <BunaAIChat open={aiOpen} onOpenChange={setAiOpen} userId={userId} userName={user?.first_name ?? "friend"} api={api} haptic={haptic} />
 
       {/* Bottom nav */}
       <nav className="fixed bottom-0 left-1/2 z-20 flex w-full max-w-md -translate-x-1/2 justify-around border-t border-coffee-100 bg-white/95 px-2 py-2 backdrop-blur" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
