@@ -44,24 +44,23 @@ curl $APP_URL/api/orders/BC-1001
 npm run test:auth
 ```
 
-## Buna AI salesperson — phone tests (BOT_TOKEN + webhook; no Gemini key needed, mock mode works)
-Run these in the bot chat — everything happens in Telegram, no web page.
-- [ ] `/start` → one plain message "ሰላም! እንኳን ወደ ቡና ኮርነር በደህና መጡ ☕" — **no buttons, no name**.
-- [ ] Chat a bit in Amharic ("ሰላም", "ማኪያቶ አለ?") — replies are conversational, no inline buttons, no menu dump.
-- [ ] Switch to English ("do you have croissant?") — the reply switches to English.
-- [ ] On roughly your 3rd message the bot asks your name once; answer "Abebe" → it greets you by name and never asks again.
-- [ ] Ask about a specific product ("tell me about the macchiato") — a short answer **and** the item widget card appears.
-- [ ] Say "I want 2 large macchiato" — the bot confirms; the cart now has 2× Large (140 ETB each).
-- [ ] Say "deliver it" → the bot asks your address; send it → it confirms (delivery adds 50 ETB).
-- [ ] Say "that's all, I'll pay" → a **Telegram Stars invoice** appears in the chat (amount = total ÷ 2.5, rounded up). Pay it.
-- [ ] After paying: thank-you message with your name + order id, and a 🧾 tracker widget; owner gets "🔔 New order".
-- [ ] Owner moves the order to Brewing → the tracker widget updates in place and a plain status message arrives.
-- [ ] Ask "can I see the full menu with photos?" → exactly one "☕ ሙሉ ምናሌ" button that opens the Mini App. This is the **only** time a web page is offered.
-- [ ] Sold out: set croissant to 0 in the owner tab, ask for one — the bot says it's sold out and suggests an alternative; nothing is added.
-- [ ] Try paying a stale invoice after the shop sold out of an item — Telegram shows the "sold out" message and refuses.
-- [ ] Memory: order, then later ask "what do I usually order?" — it remembers.
-- [ ] Offline: `npm run test:agent` and `npm run test:bot` — all checks pass (no key, no token, no network).
-- [ ] API (no key): `GET /api/ai/health` → `aiConfigured: false, mock: true`.
+## Buna AI salesperson — phone tests (BOT_TOKEN + webhook + GEMINI_API_KEY for voice/live AI)
+Everything happens in the bot chat.
+- [ ] First: send `/widgettest`. Both lines should say OK. If not, the text is Telegram's exact error: send it to the developer.
+- [ ] `/start` → "ሰላም 👋 ወደ ቡና ኮርነር እንኳን መጣችሁ ☕". No buttons, no name.
+- [ ] Chat in Amharic: replies are short and casual (no ልጠጣልዎት / ይፈልጋሉ / በደህና መጡ).
+- [ ] Around your 3rd message it asks your name once; answer "Nahom" → it uses it, never asks again.
+- [ ] "Let me see the macchiato" → a **photo** of it, then the item **card**.
+- [ ] "Where is the thing, I want to see it" → photo + card of the last product again.
+- [ ] "The macchiato" → added; a 🛒 **cart card** appears at the bottom.
+- [ ] "Medium" → the cart card shows **one** Medium macchiato (110 ETB), not two.
+- [ ] Tap + / − on the cart card: quantity and total change in place.
+- [ ] Every few messages a reply comes as a **voice note** (with the text as caption).
+- [ ] Send a voice note ("ማኪያቶ አለ?") → it understands and replies with a voice note.
+- [ ] "That's all, I'll pay" → Stars invoice in the chat; pay → thank-you + tracker widget; owner gets the order.
+- [ ] "Show me the full menu with photos" → one "☕ ሙሉ ሜኑ" button (the only time the Mini App is offered).
+- [ ] Sold out: set croissant to 0 in the owner tab, ask for one → told it's sold out, nothing added.
+- [ ] Offline: `npm run test:agent` and `npm run test:bot` pass (no key, no token, no network).
 
 ## Inventory — phone + API tests
 - [ ] Item page: an item at/below its low level shows "⚠️ Only X left today" (e.g. order croissants down or use the owner tab to set qty 3).

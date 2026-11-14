@@ -61,30 +61,33 @@ assistant: it talks like a person, sells, and takes payment right in the chat.
 
 **A typical chat**
 
-1. `/start` → the bot just says *"ሰላም! እንኳን ወደ ቡና ኮርነር በደህና መጡ ☕"*.
-   No buttons, no menu, no name yet.
-2. The customer talks (Amharic or English — it follows them). The AI
-   recommends, answers, upsells gently. It never dumps a menu or says "tap".
-3. **After ~3 messages** it asks their name once, naturally, then uses it.
-4. Customer asks about a **specific product** → the AI answers in a sentence
-   *and* sends that product's interactive **HTML widget** (Bot API 10.4):
-   size buttons, "➕ Add to cart", "💳 Pay now" — all inside the bubble.
-5. Customer says what they want → the AI puts it in their cart (stock,
-   sizes and quantities are validated server-side; sold-out items are
-   refused). Pickup is free, delivery is +50 ETB and the AI asks for the
-   address in chat.
-6. Customer is done / says "pay" → a native **Telegram Stars invoice** (XTR)
-   appears **in the chat** and they pay there. On `successful_payment` the
-   order is created, stock drops, the owner is notified, the customer gets a
-   thank-you and a live **order-tracker widget** that updates in place as
-   the owner moves the order to Brewing/Ready.
-7. **Only if they ask to see more** (full menu, photos, all the details) the
-   bot sends one "☕ Full menu" button that opens the Mini App. That is the
-   only time a web page is offered.
+1. `/start` → *"ሰላም 👋 ወደ ቡና ኮርነር እንኳን መጣችሁ ☕"*. No buttons, no menu, no name yet.
+2. The customer talks (Amharic or English, typed **or as a voice note**). The
+   AI answers like a friend texting, in **simple everyday Amharic**: no
+   formal -ዎት forms, and neutral phrasing when it doesn't know if it's
+   talking to a man or a woman.
+3. **After ~3 messages** it asks their name once ("ስም ማን ልበል? 😊"), then uses it.
+4. Customer asks about / wants to **see** a product → the bot sends its
+   **photo**, then its interactive **HTML widget** (sizes, add, pay). "Where is
+   it? I want to see it" always brings the photo and card for the last
+   product discussed, even if the model only talked about it.
+5. Whenever the cart changes, a **🛒 cart card** (HTML widget) appears at the
+   bottom of the chat with every line, − / + buttons, the total and "💳 Pay".
+   The old card is deleted, so there's only ever one. "Medium" changes the
+   size of what's already in the cart; it doesn't add a second one.
+6. "That's all" / "pay" → a **Telegram Stars invoice** appears in the chat.
+   Once paid: order created, thank-you, live order-tracker widget, and the
+   owner is notified.
+7. **Voice:** now and then the bot answers with a **voice note**: when it
+   describes a product, learns their name or thanks them. It's at most one
+   voice note every 3 messages. If the customer sends a voice note, the bot
+   transcribes it and answers by voice.
+8. Only if they ask for the full menu / photos of everything → one
+   "☕ ሙሉ ሜኑ" button opens the Mini App.
 
-Commands exist but are never pushed on the customer: `/orders` (text
-status), `/checkout` (invoice for the current cart), `/shop` (Mini App link),
-`/stock` (owner only).
+Commands exist but are never pushed on the customer: `/orders`, `/checkout`,
+`/shop`, `/stock` (owner), `/widgettest` (sends two widgets and replies with
+Telegram's exact answer: use it if a card ever doesn't show up).
 
 **Payments — Telegram Stars.** Menu prices are in ETB; the invoice converts
 at `ETB_PER_STAR` (default 2.5, rounded up). Stars need no provider token.
@@ -95,13 +98,17 @@ order can't be found the Stars are refunded automatically with
 `refundStarPayment`). The invoice is an immutable snapshot of the cart, so
 adding items afterwards can't change what was paid for. Code: `lib/checkout.ts`.
 
-**How the AI works.** `lib/agent.ts` — Gemini (`gemini-3-flash-preview`,
-fallback `gemini-3.5-flash-lite`) answers with JSON `{reply, actions}`;
-actions are `show_item`, `add_to_cart`, `remove_from_cart`, `set_delivery`,
-`checkout`, `show_more`. The model proposes, the server validates and
-executes. The system prompt carries the menu with ids, live stock, the
-customer's name/favourites and their current cart. It is honest that it is
-the shop's AI if asked.
+**How the AI works: LangGraph.** `lib/agent.ts` is a LangGraph tool-calling
+loop (`START → agent ⇄ tools → END`) on Gemini via `@langchain/google-genai`
+(`gemini-3-flash-preview`, with fallback to `gemini-3.5-flash-lite`). Tools:
+`show_item`, `add_to_cart`, `update_cart_item`, `remove_from_cart`,
+`set_delivery`, `checkout`, `show_more`, `speak`. The server runs each tool
+with its own checks (stock, sizes, item exists) and returns the real result
+("OK: added…" / "FAILED: sold out") to the model. The model writes its reply
+only after seeing it, so it can't claim it changed something it didn't.
+Cards, cart, link and invoice are sent after the reply. Voice: `lib/voice.ts`
+(Gemini TTS → MP3 in pure JS via lamejs → `sendVoice`; incoming voice notes
+are transcribed by Gemini).
 
 - **No key = mock salesperson.** Without `GEMINI_API_KEY` (or if Gemini
   errors) a rule-based Amharic/English salesperson runs the same flow

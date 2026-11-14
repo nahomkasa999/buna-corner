@@ -60,16 +60,27 @@ Photos are Unsplash placeholders, not the shop's real photos.
 
 ## Buna AI — limits
 - **The AI lives in the bot only.** The Mini App no longer has an AI chat
-  panel; the old `/api/ai/*` routes still exist (text + TTS) but nothing in
-  the shop UI calls them. The bot replies in text only — no voice messages.
+  panel; the old `/api/ai/*` routes still exist but nothing in the shop UI
+  calls them.
 - **No Gemini key = mock mode.** A rule-based salesperson (still does item
   cards, cart, delivery, pay, name-after-3-turns, in Amharic/English) — it is
   much less flexible than the live model.
-- **The live JSON path is untested against real Gemini** (no key in dev):
-  the parser is covered by unit checks and any unparseable/failed reply
-  falls back to the mock salesperson or the plain text, but prompt quality
-  (does it really stay to 1-3 sentences, ask the name at the right time) needs
-  a live try.
+- **The LangGraph loop is tested with a scripted fake model, not real
+  Gemini** (no key in dev). Tool execution, size changes, sold-out refusals,
+  voice gating and fallback-to-mock are all covered offline. Two things still
+  need a live try: whether Gemini picks the right tools at the right moment,
+  and how natural its casual Amharic sounds.
+- **Voice notes:** Amharic TTS quality is whatever Gemini's TTS offers (it may
+  sound less natural than English). Voice is sent as MP3 through `sendVoice`,
+  which Telegram documents as accepted. If it ever shows as a file instead of
+  a voice bubble, switch the encoder to OGG/Opus. Voice transcription of
+  customers' notes depends on Gemini understanding Amharic speech. Each voice
+  reply adds a few seconds (TTS + encoding).
+- **HTML widgets are unverified in production.** If a product card or cart
+  card doesn't appear, send `/widgettest` to the bot: it replies with
+  Telegram's exact error, and every failed Telegram call is logged in Vercel
+  (`[telegram] sendWidget failed: …`). The product photo is sent first either
+  way, so the customer always sees the product.
 - **Set `GEMINI_API_KEY`** in Vercel env vars for the live model. The key is
   never in the repo (`.env.example` carries only the `TEST_KEY_1`
   placeholder).

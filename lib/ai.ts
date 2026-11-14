@@ -254,7 +254,7 @@ export async function speakText(text: string, lang: AiLang): Promise<SpeakResult
     if (!ai) return { audioBase64: null, mimeType: null, reason: "mock" };
     const res = await ai.models.generateContent({
       model: TTS_MODEL,
-      contents: [{ role: "user", parts: [{ text: `Say in ${lang === "am" ? "Amharic" : "English"}: ${text}` }] }],
+      contents: [{ role: "user", parts: [{ text: `Say this warmly and casually, like a friendly young barista chatting with a regular customer, in ${lang === "am" ? "Amharic" : "English"}: ${text}` }] }],
       config: {
         responseModalities: ["AUDIO"],
         speechConfig: {

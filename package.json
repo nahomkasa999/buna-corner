@@ -1,6 +1,10 @@
 {
   "dependencies": {
+    "@breezystack/lamejs": "^1.2.7",
     "@google/genai": "^3.3.0",
+    "@langchain/core": "^1.4.1",
+    "@langchain/google-genai": "^2.3.6",
+    "@langchain/langgraph": "^1.7.4",
     "@telegram-apps/sdk": "^3.0.0",
     "grammy": "^1.36.0",
     "next": "^15.3.0",
@@ -8,7 +12,7 @@
     "react-dom": "^19.1.0",
     "zod": "^3.24.0"
   },
-  "description": "Buna Corner \u2014 Telegram Mini App storefront demo for a fictional Addis Ababa coffee shop",
+  "description": "Buna Corner — Telegram Mini App storefront demo for a fictional Addis Ababa coffee shop",
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/react": "^19.1.0",

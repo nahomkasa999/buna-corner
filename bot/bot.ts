@@ -1,13 +1,26 @@
 import { Bot, InlineKeyboard } from "grammy";
 import { getMenuItem, getOrCreateUserMemory, getOrder, getOrders, getInventory } from "../lib/store";
-import { runDeliveryActions, salesTurn, startGreeting } from "../lib/agent";
+import { runDeliveryActions, salesTurn, startGreeting, type AgentResult } from "../lib/agent";
 import { completePayment, sendCartInvoice, validatePreCheckout } from "../lib/checkout";
-import { sendItemWidget, sendOrderTrackerWidget } from "../lib/widget";
-import { botUsername, miniAppKeyboard, shopUrl, tgCall } from "../lib/tg";
+import { sendItemWidget, sendOrderTrackerWidget, sendWidgetRaw } from "../lib/widget";
+import { botUsername, miniAppKeyboard, sendVoiceMp3, shopUrl, tgCall } from "../lib/tg";
+import { aiConfigured } from "../lib/ai";
+import { transcribe, ttsMp3 } from "../lib/voice";
 
 export { botUsername, shopUrl };
 
 let botInstance: Bot | null = null;
+
+/** Send the agent's reply (as a voice note when it chose to speak), then its cards/invoice. */
+export async function deliverTurn(chatId: number, userId: number, r: AgentResult, replyText: (t: string) => Promise<unknown>): Promise<void> {
+  let spoke = false;
+  if (r.voice) {
+    const mp3 = await ttsMp3(r.reply, r.lang);
+    if (mp3) spoke = (await sendVoiceMp3(chatId, mp3, r.reply)).ok;
+  }
+  if (!spoke) await replyText(r.reply);
+  if (r.deliver.length) await runDeliveryActions(chatId, userId, r.deliver, r.lang);
+}
 
 /**
  * The bot is a salesperson, not a menu: customers just talk to it in the
@@ -28,7 +41,7 @@ export function createBot(): Bot | null {
     const userId = ctx.from?.id ?? 0;
     await ctx.reply(startGreeting(userId, ctx.from?.first_name ?? "friend"));
     if (payload.startsWith("ref_")) {
-      await ctx.reply("🎁 ጓደኛዎ ጋብዘውዎታል — የመጀመሪያ ትዕዛዝዎ ላይ ነፃ መጠጥ ያገኛሉ!");
+      await ctx.reply("🎁 በጓደኛ ግብዣ ነው የመጣችሁት — የመጀመሪያው ትዕዛዝ ላይ ነፃ መጠጥ አለ!");
     }
     if (payload.startsWith("item_")) {
       const item = getMenuItem(payload.replace("item_", ""));
@@ -40,7 +53,7 @@ export function createBot(): Bot | null {
   bot.command("orders", async (ctx) => {
     const mine = getOrders(ctx.from?.id).slice(0, 3);
     if (mine.length === 0) {
-      await ctx.reply("እስካሁን ምንም ትዕዛዝ የለዎትም — ምን ልጠጣልዎት? ☕");
+      await ctx.reply("እስካሁን ትዕዛዝ የለም — ምን ይሁን? ☕");
       return;
     }
     await ctx.reply(mine.map((o) => `${o.id} — ${o.status} — ${o.total} ETB`).join("\n"));
@@ -48,9 +61,18 @@ export function createBot(): Bot | null {
 
   // Explicit "see more" — the one place a link to the Mini App is the answer.
   bot.command("shop", async (ctx) => {
-    await ctx.reply("ሙሉ ምናሌውን፣ ፎቶዎችንና ዝርዝሩን እዚህ ያገኛሉ 👇", {
-      reply_markup: miniAppKeyboard("☕ ሙሉ ምናሌ") as never,
+    await ctx.reply("ሙሉ ሜኑው፣ ፎቶና ዝርዝሩ ይኸው 👇", {
+      reply_markup: miniAppKeyboard("☕ ሙሉ ሜኑ") as never,
     });
+  });
+
+  // Diagnostic: does this bot/account/app accept HTML widgets? Replies with Telegram's exact answer.
+  bot.command("widgettest", async (ctx) => {
+    const tiny = await sendWidgetRaw(ctx.chat.id, "<b>☕ Widget test</b><p>If you can read this, widgets work.</p>", {}, "Widget test");
+    const item = await sendItemWidget(ctx.chat.id, "macchiato");
+    await ctx.reply(
+      `sendWidget (tiny): ${tiny.ok ? "OK" : `FAILED — ${tiny.reason}`}\nsendWidget (item card): ${item.ok ? "OK" : `FAILED — ${item.reason}`}`,
+    );
   });
 
   bot.command("stock", async (ctx) => {
@@ -71,7 +93,7 @@ export function createBot(): Bot | null {
     const r = await sendCartInvoice(ctx.from?.id ?? 0, ctx.chat.id);
     if (!r.ok) {
       await ctx.reply(
-        r.reason === "empty" ? "ጋሪዎ ባዶ ነው — ምን ልጠጣልዎት? ☕" : r.reason === "stock" ? r.detail ?? "Something is sold out" : r.reason === "need_address" ? "ወደ የት ልላክልዎት? አድራሻዎን ይጻፉልኝ 📍" : "ይቅርታ፣ ክፍያውን መላክ አልቻልኩም።",
+        r.reason === "empty" ? "ካርቱ ባዶ ነው — ምን ይሁን? ☕" : r.reason === "stock" ? r.detail ?? "Something is sold out" : r.reason === "need_address" ? "አድራሻው የት ነው? 📍" : "ይቅርታ፣ ክፍያውን መላክ አልቻልኩም 😕",
       );
     }
   });
@@ -101,15 +123,15 @@ export function createBot(): Bot | null {
     if (!done.ok) {
       // Money was taken but we can't find the order (e.g. state lost on a redeploy): give it back.
       await tgCall("refundStarPayment", { user_id: userId, telegram_payment_charge_id: p.telegram_payment_charge_id });
-      await ctx.reply("ይቅርታ፣ ትዕዛዝዎን ማግኘት አልቻልኩም — ክፍያዎ ተመልሶልዎታል። እባክዎ እንደገና ይሞክሩ 🙏");
+      await ctx.reply("ይቅርታ 😕 ትዕዛዙን ማግኘት አልቻልኩም — ብሩ ተመልሷል። እንደገና እንሞክር? 🙏");
       return;
     }
     if (done.duplicate) return;
     const { order } = done;
     const mem = getOrCreateUserMemory(userId);
-    const who = mem.callName ? `${mem.callName}፣ ` : "";
-    const where = order.fulfillment === "delivery" ? `ወደ ${order.address ?? "አድራሻዎ"} እናደርሳለን 🛵` : "ሲዘጋጅ እናሳውቅዎታለን — ቡና ኮርነር፣ ቦሌ ይውሰዱ ☕";
-    await ctx.reply(`${who}አመሰግናለሁ! ክፍያዎ ደርሶናል ✅\nትዕዛዝ ${order.id} ተቀብለናል — ${where}`);
+    const who = mem.callName ? `${mem.callName}! ` : "";
+    const where = order.fulfillment === "delivery" ? `ወደ ${order.address ?? "አድራሻው"} እናደርሳለን 🛵` : "ሲደርስ እንነግራችኋለን — ቦሌ ቡና ኮርነር ☕";
+    await ctx.reply(`${who}አመሰግናለሁ 🙏 ክፍያው ደርሶናል ✅\nትዕዛዝ ${order.id} — ${where}`);
     notifyOwnerNewOrder(order.id).catch(() => undefined);
     sendOrderTrackerWidget(order.id).catch(() => undefined);
   });
@@ -122,10 +144,35 @@ export function createBot(): Bot | null {
     ctx.replyWithChatAction("typing").catch(() => undefined);
     try {
       const r = await salesTurn(userId, ctx.from?.first_name ?? "friend", text);
-      await ctx.reply(r.reply);
-      if (r.deliver.length) await runDeliveryActions(ctx.chat.id, userId, r.deliver, r.lang);
-    } catch {
-      await ctx.reply("☕ ይቅርታ፣ ትንሽ ተቸገርኩ — እባክዎ እንደገና ይጻፉልኝ።");
+      await deliverTurn(ctx.chat.id, userId, r, (t) => ctx.reply(t));
+    } catch (e) {
+      console.error("[bot] text turn failed:", e);
+      await ctx.reply("😕 ትንሽ ተቸገርኩ — እንደገና ጻፉልኝ?");
+    }
+  });
+
+  // Customers can talk by voice: transcribe with Gemini, answer with a voice note.
+  bot.on("message:voice", async (ctx) => {
+    const userId = ctx.from?.id ?? 0;
+    if (!aiConfigured()) {
+      await ctx.reply("ለጊዜው ድምፅ መስማት አልችልም 😅 በጽሁፍ ይሁን?");
+      return;
+    }
+    ctx.replyWithChatAction("record_voice").catch(() => undefined);
+    try {
+      const file = await ctx.getFile();
+      const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
+      const audio = Buffer.from(await res.arrayBuffer());
+      const heard = await transcribe(audio, ctx.message.voice.mime_type ?? "audio/ogg");
+      if (!heard) {
+        await ctx.reply("😕 በደንብ አልሰማሁም — እንደገና?");
+        return;
+      }
+      const r = await salesTurn(userId, ctx.from?.first_name ?? "friend", heard, { viaVoice: true });
+      await deliverTurn(ctx.chat.id, userId, r, (t) => ctx.reply(t));
+    } catch (e) {
+      console.error("[bot] voice turn failed:", e);
+      await ctx.reply("😕 ድምፁ አልተከፈተልኝም — በጽሁፍ ይሁን?");
     }
   });
 

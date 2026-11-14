@@ -3,6 +3,9 @@ import { webhookCallback } from "grammy";
 import { createBot } from "@/bot/bot";
 import { handleWidgetQuery, isWidgetQuery } from "@/lib/widget";
 
+// AI turn + tool calls + TTS can take a while; give the webhook room.
+export const maxDuration = 60;
+
 export async function POST(req: Request) {
   // Bot API 10.4 widget_query updates are NOT dispatched by grammY, so
   // intercept them here first. req.clone() leaves the original request

@@ -61,6 +61,10 @@ export interface UserMemory {
   nameState: NameState;
   /** Number of customer messages so far (drives "ask their name after a few turns"). */
   userTurns: number;
+  /** Last product talked about — "where is it? I want to see it" refers to this. */
+  lastItemId?: string;
+  /** userTurns value when we last answered with a voice note (keeps voice occasional). */
+  lastVoiceTurn?: number;
   history: ChatTurn[]; // last 12 turns, oldest first
   prefs: { lang: "am" | "en"; favourites: string[]; orderCount: number; lastOrderId?: string };
   updatedAt: string;
@@ -99,6 +103,8 @@ declare global {
     widgetStates: Record<string, string>;
     /** Current widget-draft id per user (built by tapping "Add to cart" in a widget). */
     widgetDrafts: Record<string, string>;
+    /** The live cart widget per user (one at a time; re-sent to the bottom when the cart changes in chat). */
+    cartWidgets: Record<string, { chatId: number; messageId: number }>;
   } | undefined;
 }
 
@@ -119,8 +125,10 @@ function getStore() {
       draftSeq: 0,
       widgetStates: {},
       widgetDrafts: {},
+      cartWidgets: {},
     };
   }
+  globalThis.__bunaStore.cartWidgets ??= {};
   return globalThis.__bunaStore;
 }
 
@@ -477,4 +485,40 @@ export function setCartDelivery(userId: number, fulfillment: Fulfillment, addres
   if (fulfillment === "pickup") d.address = undefined;
   else if (address) d.address = address;
   return d;
+}
+
+const SIZE_PRICE: Record<string, number> = { Small: 0, Medium: 30, Large: 60 };
+
+/**
+ * Change an item already in the cart: its size (re-priced) and/or quantity
+ * (0 removes it). Acts on the most recent line of that item. Returns the
+ * updated line, or null if the item isn't in the cart.
+ */
+export function updateCartItem(userId: number, itemId: string, change: { size?: "Small" | "Medium" | "Large"; qty?: number }): OrderLine | null {
+  const cart = getCart(userId);
+  const item = getMenuItem(itemId);
+  if (!cart || !item) return null;
+  const idx = cart.lines.map((l) => l.id).lastIndexOf(item.id);
+  if (idx < 0) return null;
+  const line = cart.lines[idx];
+  if (change.size && item.options?.some((g) => g.name === "Size")) {
+    line.options = { ...(line.options ?? {}), Size: change.size };
+    line.unitPrice = item.price + (SIZE_PRICE[change.size] ?? 0);
+  }
+  if (typeof change.qty === "number") line.qty = Math.max(0, Math.min(20, Math.floor(change.qty)));
+  // Merge with an identical line (e.g. two Mediums after a size change) and drop zero lines.
+  const key = (l: OrderLine) => JSON.stringify([l.id, l.options ?? {}]);
+  const twin = cart.lines.findIndex((l, i) => i !== idx && key(l) === key(line));
+  if (twin >= 0 && line.qty > 0) { cart.lines[twin].qty += line.qty; line.qty = 0; }
+  cart.lines = cart.lines.filter((l) => l.qty > 0);
+  return twin >= 0 ? cart.lines.find((l) => key(l) === key(line)) ?? null : line.qty > 0 ? line : null;
+}
+
+export function getCartWidget(userId: number): { chatId: number; messageId: number } | undefined {
+  return getStore().cartWidgets[String(userId)];
+}
+
+export function setCartWidget(userId: number, ref: { chatId: number; messageId: number } | undefined): void {
+  if (ref) getStore().cartWidgets[String(userId)] = ref;
+  else delete getStore().cartWidgets[String(userId)];
 }

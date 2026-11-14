@@ -23,6 +23,9 @@
 import { deflateSync } from "node:zlib";
 import {
   addToWidgetDraft,
+  getCart,
+  getCartWidget,
+  setCartWidget,
   getDraft,
   getMenuItem,
   getOrder,
@@ -35,8 +38,8 @@ import {
   type OrderLine,
 } from "./store";
 import type { MenuItem } from "./data";
-import { sendCartInvoice } from "./checkout";
-import { tgCall, type TgResult } from "./tg";
+import { draftTotals, sendCartInvoice } from "./checkout";
+import { deleteMessage, tgCall, type TgResult } from "./tg";
 
 // ---------- size helpers ----------
 
@@ -78,7 +81,7 @@ export function buildItemWidget(item: MenuItem, stock: number): string {
     + `<button class=a id=ad onclick="ad()">➕ Add to cart</button>`
     + `<button class=c onclick="q('checkout')">💳 Pay now</button><div id=m>&nbsp;</div></div>`
     + `<script>var W=window.TelegramWidget,P=${item.price},SZ='S',QA=0,QN=0,I='${item.id}';`
-    + `function st(){try{return JSON.parse(W.chatData||'{}')}catch(e){return{}}}`
+    + `function st(){var c=W.chatData;if(c&&typeof c==='object')return c;try{return JSON.parse(c||'{}')}catch(e){return{}}}`
     + `function draw(s){SZ=s.s||'S';QA=s.a||0;QN=s.q||0;var d=SZ==='M'?30:SZ==='L'?60:0;var e=document.getElementById('pr');if(e)e.textContent=(P+d)+' ETB';['S','M','L'].forEach(function(x){var b=document.getElementById('b'+x);if(b)b.className=SZ===x?'on':''});var a=document.getElementById('ad');if(a)a.textContent=QA?('✅ Added ('+QN+') — add another'):'➕ Add to cart';var m=document.getElementById('m');if(m)m.textContent=s.err||' ';}`
     + `function q(x){if(!W)return;W.request(x).then(function(a){if(a&&a.result){try{draw(JSON.parse(a.result))}catch(e){}}}).catch(function(){})}`
     + `function sz(x){SZ=x;draw({s:x,a:QA,q:QN});q('size:'+I+':'+x)}`
@@ -99,10 +102,78 @@ export function buildOrderWidget(order: Order): string {
     + `<div>Total: <b>${order.total} ETB</b> · ${order.fulfillment === "delivery" ? "Delivery" : "Pickup"}</div>`
     + `<button class=a onclick="q('refresh:${order.id}')">🔄 Refresh</button><div id=m>&nbsp;</div></div>`
     + `<script>var W=window.TelegramWidget;var ST=["Received","Brewing","Ready","Completed"];`
-    + `function st(){try{return JSON.parse(W.chatData||'{}')}catch(e){return{}}}`
+    + `function st(){var c=W.chatData;if(c&&typeof c==='object')return c;try{return JSON.parse(c||'{}')}catch(e){return{}}}`
     + `function draw(s){var c=s.s||"Received";var h="";if(c==="Cancelled"){h="<div>❌ Cancelled</div>"}else{var ix=c==="Out for delivery"?2:ST.indexOf(c);if(ix<0)ix=0;ST.forEach(function(x,i){h+="<div>"+(i<ix?"✅":i===ix?"☕":"○")+" "+x+"</div>"})}var e=document.getElementById('st');if(e)e.innerHTML=h;}`
     + `function q(x){if(!W)return;W.request(x).then(function(a){if(a&&a.result){try{draw(JSON.parse(a.result))}catch(e){}}}).catch(function(){})}`
     + `if(W){W.onEvent('chatDataChanged',function(){draw(st())});draw(st())}</script>`;
+}
+
+
+/**
+ * Cart card: every line with − / + buttons, the total and "💳 Pay".
+ * chat_data: {l: [[name, qty, unitPrice, sizeCode]], t: total, d: deliveryFee}.
+ * Built with DOM calls (no innerHTML), so names can never inject markup.
+ */
+export function buildCartWidget(): string {
+  return `<style>body{margin:0;font:14px sans-serif}h3{margin:0 0 4px;font-size:15px}.r{display:flex;align-items:center;gap:6px;padding:3px 0}.n{flex:1}.r button{width:30px;padding:4px 0;border:0;border-radius:8px;background:var(--tg-theme-secondary-bg-color,#eee);font-size:15px}.p{min-width:56px;text-align:right;color:var(--tg-theme-hint-color,#888);font-size:12px}.a{width:100%;padding:10px;border:0;border-radius:12px;background:#c08a3e;color:#fff;font-size:15px;font-weight:700;margin:8px 0 2px}#m{font-size:12px;min-height:15px;color:var(--tg-theme-hint-color,#888)}</style>`
+    + `<div><h3>🛒 Your order</h3><div id=L></div><div id=T></div><button class=a id=P>💳 Pay</button><div id=m>&nbsp;</div></div>`
+    + `<script>var W=window.TelegramWidget,Z={S:'',M:' (M)',L:' (L)'};`
+    + `function st(){var c=W.chatData;if(c&&typeof c==='object')return c;try{return JSON.parse(c||'{}')}catch(e){return{}}}`
+    + `function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}`
+    + `function draw(s){var L=document.getElementById('L'),l=s.l||[];while(L.firstChild)L.removeChild(L.firstChild);`
+    + `if(!l.length)L.appendChild(el('div','p','Empty — tell me what you would like ☕'));`
+    + `l.forEach(function(x,i){var r=el('div','r'),d=el('button',null,'−'),u=el('button',null,'+');d.addEventListener('click',function(){q('cd:'+i)});u.addEventListener('click',function(){q('ci:'+i)});`
+    + `r.appendChild(el('span','n',x[0]+(Z[x[3]]||'')));r.appendChild(d);r.appendChild(el('b',null,String(x[1])));r.appendChild(u);r.appendChild(el('span','p',(x[1]*x[2])+' ETB'));L.appendChild(r)});`
+    + `document.getElementById('T').textContent=l.length?('Total '+(s.t||0)+' ETB'+(s.d?' (incl. '+s.d+' delivery)':'')):'';`
+    + `var P=document.getElementById('P');P.disabled=!l.length;P.textContent=l.length?('💳 Pay '+(s.t||0)+' ETB'):'💳 Pay';`
+    + `document.getElementById('m').textContent=s.err||' '}`
+    + `function q(x){if(!W)return;W.request(x).then(function(a){if(a&&a.result){try{draw(JSON.parse(a.result))}catch(e){}}}).catch(function(){})}`
+    + `document.getElementById('P').addEventListener('click',function(){q('checkout')});`
+    + `if(W){W.onEvent('chatDataChanged',function(){draw(st())});draw(st())}</script>`;
+}
+
+const SIZE_CODE: Record<string, string> = { Small: "S", Medium: "M", Large: "L" };
+
+/** Compact cart state for the cart widget (kept under the 1,024-byte chat_data limit). */
+export function cartWidgetState(userId: number): Record<string, unknown> {
+  const cart = getCart(userId);
+  if (!cart) return { l: [], t: 0, d: 0 };
+  const { total, deliveryFee } = draftTotals(cart);
+  let nameLen = 22;
+  for (;;) {
+    const state = {
+      l: cart.lines.slice(0, 12).map((l) => [l.name.slice(0, nameLen), l.qty, l.unitPrice, SIZE_CODE[l.options?.Size ?? ""] ?? "S"]),
+      t: total,
+      d: deliveryFee,
+    };
+    if (JSON.stringify(state).length <= 1000 || nameLen <= 6) return state;
+    nameLen -= 4;
+  }
+}
+
+/**
+ * Show the cart card. "resend": delete the old card and send a fresh one at
+ * the bottom of the chat (cart changed in conversation). "edit": update the
+ * existing card in place (a tap on the card itself), sending one if none.
+ */
+export async function refreshCartWidget(chatId: number, userId: number, mode: "resend" | "edit"): Promise<{ ok: boolean; reason?: string }> {
+  const state = cartWidgetState(userId);
+  const prev = getCartWidget(userId);
+  if (mode === "edit" && prev) {
+    const r = await editWidgetDataRaw(prev.chatId, prev.messageId, state);
+    if (r.ok) return { ok: true };
+  }
+  if (prev) {
+    deleteMessage(prev.chatId, prev.messageId).catch(() => undefined);
+    setCartWidget(userId, undefined);
+  }
+  const total = (state.t as number) || 0;
+  const r = await sendWidgetRaw(chatId, buildCartWidget(), state, total ? `🛒 Your order — ${total} ETB` : "🛒 Your order");
+  if (r.ok && r.messageId) {
+    setCartWidget(userId, { chatId, messageId: r.messageId });
+    setWidgetState(`${chatId}:${r.messageId}`, state);
+  }
+  return { ok: r.ok, reason: r.reason };
 }
 
 // ---------- raw Bot API calls (grammY has no widget methods yet) ----------
@@ -274,6 +345,8 @@ export async function handleWidgetQuery(q: WidgetQuery): Promise<{
       setWidgetState(key, state);
       const edited = (await editWidgetDataRaw(chatId, messageId, state)).ok;
       const answered = await answer(state);
+      // The cart card moves to the bottom with the new line in it.
+      await refreshCartWidget(chatId, userId, "resend").catch(() => undefined);
       return { ok: true, answered, edited, action: "add" };
     }
 
@@ -291,6 +364,36 @@ export async function handleWidgetQuery(q: WidgetQuery): Promise<{
       }
       const answered = await answer({ ok: 1 });
       return { ok: true, answered, edited: false, action: "checkout" };
+    }
+
+    // --- ci:<index> / cd:<index> : + / − on a cart-card line ---
+    if (data.startsWith("ci:") || data.startsWith("cd:")) {
+      const cart = getCart(userId);
+      const line = cart?.lines[Number(data.slice(3))];
+      if (!cart || !line) {
+        const state = cartWidgetState(userId);
+        await editWidgetDataRaw(chatId, messageId, state);
+        await answer(state);
+        return { ok: false, answered: true, edited: true, action: "cart", note: "line not found" };
+      }
+      if (data.startsWith("ci:")) {
+        const inCart = cart.lines.filter((l) => l.id === line.id).reduce((n, l) => n + l.qty, 0);
+        const left = stockLeft(line.id);
+        if (inCart + 1 > left) {
+          const state = { ...cartWidgetState(userId), err: left <= 0 ? `${line.name} is sold out` : `Only ${left} left` };
+          await answer(state);
+          return { ok: false, answered: true, edited: false, action: "cart", note: "out of stock" };
+        }
+        line.qty += 1;
+      } else {
+        line.qty -= 1;
+        if (line.qty <= 0) cart.lines = cart.lines.filter((l) => l !== line);
+      }
+      const state = cartWidgetState(userId);
+      setWidgetState(key, state);
+      const edited = (await editWidgetDataRaw(chatId, messageId, state)).ok;
+      const answered = await answer(state);
+      return { ok: true, answered, edited, action: "cart" };
     }
 
     // --- refresh:<orderId> : re-read the order and update the tracker ---

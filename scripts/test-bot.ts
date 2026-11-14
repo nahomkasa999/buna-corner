@@ -3,6 +3,7 @@
 // every outgoing Bot API call recorded instead of sent. No key/token/network.
 // Run: npx tsx scripts/test-bot.ts   Exits non-zero on any failure.
 process.env.BOT_TOKEN = "test-token";
+process.env.TG_QUIET = "1";
 delete process.env.GEMINI_API_KEY;
 
 const rec: { method: string; payload: Record<string, any> }[] = [];
@@ -54,11 +55,14 @@ async function main(): Promise<void> {
   check("reply has no inline keyboard", !by("sendMessage")[0]?.payload.reply_markup);
   check("sends a typing indicator", by("sendChatAction").some((r) => r.payload.action === "typing"));
   await bot.handleUpdate(msg("tell me about the macchiato") as never);
-  check("item question -> sendWidget", by("sendWidget").length === 1 && by("sendWidget")[0].payload.html.includes("Macchiato"));
+  check("item question -> photo + item widget", by("sendPhoto").length === 1 && by("sendWidget").some((w) => String(w.payload.html).includes("Macchiato")));
   await bot.handleUpdate(msg("nice, I want a medium macchiato") as never);
-  check("name question appears by turn 3", /your name|ስምዎ ማን/.test(String(by("sendMessage").at(-1)?.payload.text)));
+  check("name question appears by turn 3", /your name|ስም ማን/.test(String(by("sendMessage").at(-1)?.payload.text)));
   await bot.handleUpdate(msg("Nahom") as never);
   check("greets by the name they gave", /Nahom/.test(String(by("sendMessage").at(-1)?.payload.text)));
+  await bot.handleUpdate(msg("Where is the thing i want to see it") as never);
+  check("'where is it, I want to see it' -> the photo + card again", by("sendPhoto").length === 2);
+  check("cart card was sent after adding", by("sendWidget").some((w) => String(w.payload.html).includes("Your order")));
 
   // pay -> invoice in chat
   await bot.handleUpdate(msg("that's all, I'll pay") as never);
@@ -83,7 +87,7 @@ async function main(): Promise<void> {
   await new Promise((r) => setTimeout(r, 30)); // fire-and-forget tracker widget
   const orders = getOrders(777);
   check("paid order created", orders.length === 1 && orders[0].paymentStatus === "paid" && orders[0].paymentMethod === "stars");
-  check("thank-you sent in chat", /ክፍያዎ ደርሶናል/.test(String(by("sendMessage")[0]?.payload.text)) && /Nahom/.test(String(by("sendMessage")[0]?.payload.text)));
+  check("thank-you sent in chat", /ክፍያው ደርሶናል/.test(String(by("sendMessage")[0]?.payload.text)) && /Nahom/.test(String(by("sendMessage")[0]?.payload.text)));
   check("order tracker widget sent", by("sendWidget").some((r) => String(r.payload.html).includes(orders[0].id)));
   check("stock decremented", getStock("macchiato")!.qty === stockBefore - 1);
 
@@ -91,6 +95,16 @@ async function main(): Promise<void> {
   rec.length = 0;
   await bot.handleUpdate({ ...paymentUpdate, update_id: updateId++ } as never);
   check("redelivered payment: still one order, no 2nd thank-you", getOrders(777).length === 1 && by("sendMessage").length === 0);
+
+  // voice note in, without a Gemini key -> a friendly text, no crash
+  rec.length = 0;
+  await bot.handleUpdate({ update_id: updateId++, message: { message_id: 950, date: 0, chat, from, voice: { file_id: "v1", file_unique_id: "u1", duration: 2, mime_type: "audio/ogg" } } } as never);
+  check("voice note without key -> polite text reply", by("sendMessage").length === 1 && /ጽሁፍ/.test(String(by("sendMessage")[0].payload.text)));
+
+  // /widgettest reports what Telegram said
+  rec.length = 0;
+  await bot.handleUpdate(msg("/widgettest", [{ type: "bot_command", offset: 0, length: 11 }]) as never);
+  check("/widgettest sends widgets and reports the result", by("sendWidget").length === 2 && /sendWidget \(tiny\): OK/.test(String(by("sendMessage").at(-1)?.payload.text)));
 
   // explicit "see more" is the only time we link the Mini App
   rec.length = 0;
